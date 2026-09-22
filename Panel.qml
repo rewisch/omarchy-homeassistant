@@ -121,7 +121,9 @@ Panel {
     if (!opened) return
     ha.reloadFiles()
     view = (!ha.configured) ? "setup" : (view === "setup" ? "home" : view)
-    ha.refresh()
+    // Live mode already has current state; a full re-sync of thousands of
+    // entities on every open is exactly the stall it would be trying to avoid.
+    if (ha.transportKind !== "websocket" || !ha.connected) ha.refresh()
     refocus()
   }
 
@@ -150,7 +152,7 @@ Panel {
     function info(): string {
       return JSON.stringify({ shared: root.usingSharedService, transport: root.ha.transportKind, status: root.ha.status, entities: root.ha.entityCount,
         automations: root.ha.automations, automationsActive: root.ha.automationsActive, presence: [root.ha._lockedState, root.ha._screensaverState],
-        eventsTotal: root.ha.eventsTotal, eventsPerSecond: root.ha.eventsPerSecond, revision: root.ha.revision })
+        eventsTotal: root.ha.eventsTotal, eventsPerSecond: root.ha.eventsPerSecond, revision: root.ha.revision, lastSyncMs: root.ha.lastSyncMs })
     }
     function toggleEntity(entityId: string): string { return ha.runPrimary(entityId) ? "ok" : "unknown" }
     function turnOn(entityId: string): string { return ha.turnOn(entityId) ? "ok" : "error" }

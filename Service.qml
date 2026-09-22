@@ -139,8 +139,13 @@ Item {
     var meta = entityMeta[state.entity_id]
     state.__diagnostic = !!(meta && meta.diagnostic)
     state.__hidden = !!(meta && meta.hidden)
+    // Sort key cached once per state object; the comparator below runs
+    // tens of thousands of times for a large instance.
+    state.__sortName = Model.friendlyName(state).toLowerCase()
     return state
   }
+
+  property real lastSyncMs: 0
 
   function rebuildList() {
     var list = []
@@ -149,13 +154,14 @@ Item {
       if (e && !e.__hidden) list.push(e)
     }
     list.sort(function(a, b) {
-      var an = Model.friendlyName(a).toLowerCase(), bn = Model.friendlyName(b).toLowerCase()
+      var an = a.__sortName, bn = b.__sortName
       return an < bn ? -1 : (an > bn ? 1 : 0)
     })
     entityList = list
   }
 
   function applyStates(states) {
+    var started = Date.now()
     var map = {}
     var changed = []
     for (var i = 0; i < states.length; i++) {
@@ -176,6 +182,7 @@ Item {
     rebuildList()
     revision++
     _initialStatesLoaded = true
+    lastSyncMs = Date.now() - started
   }
 
   // Pushed events arrive in bursts (a power meter alone can send several per
