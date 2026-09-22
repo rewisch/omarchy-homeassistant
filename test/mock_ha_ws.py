@@ -77,7 +77,8 @@ def apply_service(domain, service, data):
     elif service == "turn_on":
         e["state"] = "on"
         if "brightness_pct" in data: a["brightness"] = round(data["brightness_pct"] * 255 / 100)
-        if "color_temp_kelvin" in data: a["color_temp_kelvin"] = data["color_temp_kelvin"]
+        if "color_temp_kelvin" in data: a["color_temp_kelvin"] = data["color_temp_kelvin"]; a["color_mode"] = "color_temp"
+        if "hs_color" in data: a["hs_color"] = data["hs_color"]; a["color_mode"] = "hs"
         if domain == "scene": e["state"] = "unknown"
     elif service == "turn_off": e["state"] = "off"
     elif service == "set_temperature": a["temperature"] = data["temperature"]
@@ -132,6 +133,10 @@ def handle_ws(conn):
                 apply_service(msg["domain"], msg["service"], d)
                 send(conn, {"id": mid, "type": "result", "success": True, "result": {"context": {"id": "x"}}})
             elif t == "ping": send(conn, {"id": mid, "type": "pong"})
+            elif t == "history/history_during_period":
+                eid = (msg.get("entity_ids") or [""])[0]
+                rows = [{"s": r["s"], "lu": r["lu"]} for r in mock_ha.history_rows(eid, msg.get("start_time", ""), msg.get("end_time", ""))]
+                send(conn, {"id": mid, "type": "result", "success": True, "result": {eid: rows}})
             elif t == "persistent_notification/subscribe":
                 with LOCK: NOTIF_SUBS.append((conn, mid))
                 send(conn, {"id": mid, "type": "result", "success": True, "result": None})

@@ -11,7 +11,9 @@ Item {
   id: detail
 
   property var panel
-  property var ha
+  // Follows the panel's service so a view created before the shared service
+  // was injected picks it up instead of keeping the dormant fallback.
+  property var ha: panel ? panel.ha : null
   property string entityId: ""
 
   readonly property var entity: ha.revision >= 0 ? ha.entityFor(entityId) : null
@@ -23,8 +25,56 @@ Item {
   readonly property string areaName: ha.areaNameFor(entityId)
 
   property string cursorId: ""
+
+  // ---- Colour (lights) --------------------------------------------------------
+  readonly property bool colorCapable: domain === "light" && Model.lightSupportsColor(entity)
+  readonly property var hs: Model.lightHs(entity)
+  readonly property real currentHue: hs ? hs.h : 30
+  readonly property real currentSat: hs ? hs.s : 0
+  readonly property color currentColor: Qt.hsla(currentHue / 360, currentSat / 100, 0.6, 1)
+
+  // ---- Snapshots (cameras, album art) ---------------------------------------
+  readonly property string pictureBase: {
+    var p = attrs.entity_picture
+    if (typeof p !== "string" || p === "") return ""
+    return p.indexOf("http") === 0 ? p : ha.url + p
+  }
+  property int snapshotTick: 0
+  readonly property string snapshotUrl: pictureBase === "" ? "" : pictureBase + (pictureBase.indexOf("?") !== -1 ? "&" : "?") + "_t=" + snapshotTick
+  Timer {
+    interval: 5000
+    repeat: true
+    running: detail.domain === "camera" && detail.pictureBase !== ""
+    onTriggered: detail.snapshotTick++
+  }
+
+  // ---- History (numeric sensors) --------------------------------------------
+  readonly property bool hasHistory: Model.hasHistory(entity)
+  property int historyHours: 24
+  property var historyPoints: []
+  property bool historyLoading: false
+  readonly property var historyStats: Model.historyStats(historyPoints)
+  readonly property string unit: String(attrs.unit_of_measurement || "")
+
+  function loadHistory() {
+    if (!hasHistory) return
+    historyLoading = true
+    ha.requestHistory(entityId, historyHours)
+  }
+  onHistoryHoursChanged: { historyPoints = []; loadHistory() }
+  onHasHistoryChanged: if (hasHistory && historyPoints.length === 0) loadHistory()
+  Component.onCompleted: loadHistory()
+  Connections {
+    target: ha
+    function onHistoryReceived(id, hours, points) {
+      if (id !== detail.entityId || hours !== detail.historyHours) return
+      detail.historyPoints = points
+      detail.historyLoading = false
+      spark.requestPaint()
+    }
+  }
   property var rowItems: ({})
-  readonly property var rowOrder: ["power", "brightness", "colortemp", "target", "hvac", "preset", "fanpct", "coverbtn", "position", "transport", "volume", "lock", "run", "options", "number"]
+  readonly property var rowOrder: ["power", "brightness", "colortemp", "hue", "saturation", "swatches", "target", "hvac", "preset", "fanpct", "coverbtn", "position", "transport", "volume", "lock", "run", "options", "number", "range"]
 
   implicitHeight: column.implicitHeight
 
@@ -124,7 +174,7 @@ Item {
           Text {
             textFormat: Text.PlainText
             text: detail.entity ? Model.iconFor(detail.entity) : "󰇘"
-            color: Model.isOn(detail.entity) ? panel.foreground : panel.dim
+            color: Model.isOn(detail.entity) ? (detail.colorCapable && detail.hs && detail.currentSat > 5 ? detail.currentColor : panel.foreground) : panel.dim
             font.family: panel.fontFamily
             font.pixelSize: Style.font.displayLarge
           }
@@ -165,11 +215,74 @@ Item {
       }
     }
 
-    // Media: what is playing.
+    // Camera: live snapshot, refreshed every few seconds while open.
     Column {
-      visible: detail.domain === "media_player" && (detail.attrs.media_title || detail.attrs.media_artist)
+      visible: detail.domain === "camera" && detail.pictureBase !== ""
       width: parent.width
       leftPadding: Style.space(10)
+      rightPadding: Style.space(10)
+      spacing: Style.space(4)
+
+      Rectangle {
+        width: parent.width - Style.space(20)
+        height: Math.round(width * 9 / 16)
+        radius: Style.cornerRadius
+        color: Style.normalFillFor(panel.foreground, panel.accent)
+        clip: true
+
+        Image {
+          id: snapshot
+          anchors.fill: parent
+          source: detail.snapshotUrl
+          fillMode: Image.PreserveAspectFit
+          asynchronous: true
+          cache: false
+          smooth: true
+        }
+        Text {
+          anchors.centerIn: parent
+          visible: snapshot.status !== Image.Ready
+          textFormat: Text.PlainText
+          text: snapshot.status === Image.Error ? "No snapshot available" : "Loading snapshot…"
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+      Text {
+        textFormat: Text.PlainText
+        text: "Refreshes every 5 s while open"
+        color: panel.dimmer
+        font.family: panel.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    // Media: what is playing.
+    RowLayout {
+      visible: detail.domain === "media_player" && (detail.attrs.media_title || detail.attrs.media_artist)
+      width: parent.width
+      spacing: Style.space(10)
+
+      Rectangle {
+        visible: detail.pictureBase !== ""
+        Layout.leftMargin: Style.space(10)
+        Layout.preferredWidth: Style.space(56)
+        Layout.preferredHeight: Style.space(56)
+        radius: Style.cornerRadius
+        color: Style.normalFillFor(panel.foreground, panel.accent)
+        clip: true
+        Image {
+          anchors.fill: parent
+          source: detail.pictureBase
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+        }
+      }
+
+      Column {
+      Layout.fillWidth: true
+      leftPadding: detail.pictureBase !== "" ? 0 : Style.space(10)
       spacing: Style.space(1)
       Text {
         textFormat: Text.PlainText
@@ -190,6 +303,7 @@ Item {
         font.pixelSize: Style.font.bodySmall
         elide: Text.ElideRight
         width: parent.width - Style.space(20)
+      }
       }
     }
 
@@ -234,6 +348,37 @@ Item {
       value: Model.isNumeric(detail.attrs.color_temp_kelvin) ? Number(detail.attrs.color_temp_kelvin) : (minimum + maximum) / 2
       formatValue: function(v) { return Math.round(v) + " K · " + Model.kelvinToLabel(v) }
       onCommitted: function(v) { ha.setLightColorTemp(detail.entityId, v) }
+    }
+
+    HueRow {
+      rowId: "hue"
+      visible: detail.colorCapable
+    }
+
+    SliderRow {
+      rowId: "saturation"
+      label: "Saturation"
+      visible: detail.colorCapable
+      minimum: 0; maximum: 100; step: 10
+      value: detail.currentSat
+      formatValue: function(v) { return Math.round(v) + "%" }
+      onCommitted: function(v) { ha.setLightColor(detail.entityId, detail.currentHue, v) }
+    }
+
+    ChipsRow {
+      rowId: "swatches"
+      label: "Presets"
+      visible: detail.colorCapable
+      options: Model.SWATCHES.map(function(sw) { return sw.name })
+      current: ""
+      labelFor: function(o) { return "󰝤 " + o }
+      colorFor: function(o) {
+        for (var i = 0; i < Model.SWATCHES.length; i++) if (Model.SWATCHES[i].name === o) return Qt.hsla(Model.SWATCHES[i].h / 360, Model.SWATCHES[i].s / 100, 0.6, 1)
+        return panel.foreground
+      }
+      onPicked: function(o) {
+        for (var i = 0; i < Model.SWATCHES.length; i++) if (Model.SWATCHES[i].name === o) ha.setLightColor(detail.entityId, Model.SWATCHES[i].h, Model.SWATCHES[i].s)
+      }
     }
 
     StepperRow {
@@ -364,6 +509,117 @@ Item {
       value: detail.entity ? Number(detail.entity.state) : 0
       formatValue: function(v) { return Model.withUnit(Model.formatNumber(v), detail.attrs.unit_of_measurement) }
       onCommitted: function(v) { ha.setNumber(detail.entityId, v) }
+    }
+
+    // ---- History ------------------------------------------------------------
+
+    Column {
+      visible: detail.hasHistory
+      width: parent.width
+      spacing: Style.space(4)
+
+      ChipsRow {
+        rowId: "range"
+        label: "History"
+        visible: detail.hasHistory
+        options: Model.HISTORY_RANGES.map(function(r) { return r.key })
+        current: detail.historyHours === 3 ? "3h" : (detail.historyHours === 168 ? "7d" : "24h")
+        labelFor: function(o) {
+          for (var i = 0; i < Model.HISTORY_RANGES.length; i++) if (Model.HISTORY_RANGES[i].key === o) return Model.HISTORY_RANGES[i].label
+          return o
+        }
+        onPicked: function(o) {
+          for (var i = 0; i < Model.HISTORY_RANGES.length; i++) if (Model.HISTORY_RANGES[i].key === o) detail.historyHours = Model.HISTORY_RANGES[i].hours
+        }
+      }
+
+      Item {
+        width: parent.width - Style.space(20)
+        x: Style.space(10)
+        height: Style.space(72)
+
+        Canvas {
+          id: spark
+          anchors.fill: parent
+          onWidthChanged: requestPaint()
+          onPaint: {
+            var ctx = getContext("2d")
+            ctx.reset()
+            var pts = detail.historyPoints
+            if (!pts || pts.length < 2) return
+            var st = Model.historyStats(pts)
+            var vmin = st.min, vmax = st.max
+            if (vmax === vmin) { vmax += 1; vmin -= 1 }
+            var t0 = pts[0].t, span = Math.max(1, pts[pts.length - 1].t - t0)
+            var pad = 4, w = width, h = height
+            var fg = panel.foreground
+            var xs = [], ys = []
+            for (var i = 0; i < pts.length; i++) {
+              xs.push(pad + (pts[i].t - t0) / span * (w - 2 * pad))
+              ys.push(pad + (1 - (pts[i].v - vmin) / (vmax - vmin)) * (h - 2 * pad))
+            }
+            ctx.beginPath()
+            ctx.moveTo(xs[0], ys[0])
+            for (var j = 1; j < xs.length; j++) ctx.lineTo(xs[j], ys[j])
+            ctx.lineTo(xs[xs.length - 1], h)
+            ctx.lineTo(xs[0], h)
+            ctx.closePath()
+            ctx.fillStyle = "rgba(" + Math.round(fg.r * 255) + "," + Math.round(fg.g * 255) + "," + Math.round(fg.b * 255) + ",0.12)"
+            ctx.fill()
+            ctx.beginPath()
+            ctx.moveTo(xs[0], ys[0])
+            for (var k = 1; k < xs.length; k++) ctx.lineTo(xs[k], ys[k])
+            ctx.strokeStyle = fg
+            ctx.lineWidth = 2
+            ctx.lineJoin = "round"
+            ctx.lineCap = "round"
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.arc(xs[xs.length - 1], ys[ys.length - 1], 3, 0, Math.PI * 2)
+            ctx.fillStyle = fg
+            ctx.fill()
+          }
+        }
+
+        Text {
+          anchors.centerIn: parent
+          visible: !detail.historyPoints || detail.historyPoints.length < 2
+          textFormat: Text.PlainText
+          text: detail.historyLoading ? "Loading history…" : "No history for this range"
+          color: panel.dimmer
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      RowLayout {
+        visible: !!detail.historyStats
+        width: parent.width - Style.space(20)
+        x: Style.space(10)
+        Text {
+          textFormat: Text.PlainText
+          text: detail.historyStats ? "min " + Model.withUnit(Model.formatNumber(detail.historyStats.min), detail.unit) : ""
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Item { Layout.fillWidth: true }
+        Text {
+          textFormat: Text.PlainText
+          text: detail.historyStats ? "max " + Model.withUnit(Model.formatNumber(detail.historyStats.max), detail.unit) : ""
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+        Item { Layout.fillWidth: true }
+        Text {
+          textFormat: Text.PlainText
+          text: detail.historyStats ? detail.historyStats.count + " points" : ""
+          color: panel.dimmer
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
     }
 
     // ---- Attributes ---------------------------------------------------------
@@ -674,6 +930,7 @@ Item {
     property var options: []
     property string current: ""
     property var labelFor: function(o) { return String(o) }
+    property var colorFor: null
     property int chipCursor: -1
     signal picked(string option)
 
@@ -733,7 +990,7 @@ Item {
             selected: String(modelData) === chipsRow.current && chipsRow.current !== ""
             hasCursor: chipsRow.hasCursor && chipsRow.chipCursor === index
             bordered: true
-            foreground: panel.foreground
+            foreground: chipsRow.colorFor ? chipsRow.colorFor(modelData) : panel.foreground
             fontFamily: panel.fontFamily
             fontSize: Style.font.bodySmall
             horizontalPadding: Style.space(9)
@@ -742,6 +999,116 @@ Item {
             onHovered: function(on) { if (on) { detail.cursorId = chipsRow.rowId; chipsRow.chipCursor = index } }
             onClicked: chipsRow.picked(String(modelData))
           }
+        }
+      }
+    }
+  }
+  component HueRow: CursorSurface {
+    id: hueRow
+    property string rowId: ""
+    property real hue: detail.currentHue
+    property bool scrubbing: false
+
+    width: parent ? parent.width : 0
+    foreground: panel.foreground
+    hasCursor: detail.cursorId === rowId
+    implicitHeight: hueLayout.implicitHeight + Style.space(12)
+    Component.onCompleted: detail.registerRow(rowId, hueRow)
+
+    onHueChanged: if (!scrubbing) {}
+    Connections {
+      target: detail
+      function onCurrentHueChanged() { if (!hueRow.scrubbing) hueRow.hue = detail.currentHue }
+    }
+
+    function commit() { ha.setLightColor(detail.entityId, hue, detail.currentSat < 5 ? 100 : detail.currentSat) }
+    function adjust(dx) {
+      hue = ((hue + dx * 10) % 360 + 360) % 360
+      hueCommit.restart()
+    }
+    function activate() { commit() }
+
+    Timer { id: hueCommit; interval: 250; onTriggered: hueRow.commit() }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      propagateComposedEvents: true
+      onEntered: detail.cursorId = hueRow.rowId
+      onPressed: function(mouse) { mouse.accepted = false }
+    }
+
+    ColumnLayout {
+      id: hueLayout
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(4)
+
+      RowLayout {
+        Layout.fillWidth: true
+        Text {
+          textFormat: Text.PlainText
+          text: "Colour"
+          color: panel.foreground
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.body
+          Layout.fillWidth: true
+        }
+        Rectangle {
+          width: Style.space(12); height: Style.space(12); radius: width / 2
+          color: Qt.hsla(hueRow.hue / 360, Math.max(0.3, detail.currentSat / 100), 0.55, 1)
+        }
+        Text {
+          textFormat: Text.PlainText
+          text: Math.round(hueRow.hue) + "°"
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      Item {
+        Layout.fillWidth: true
+        height: Style.space(18)
+
+        Rectangle {
+          id: hueTrack
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          height: Style.space(8)
+          radius: height / 2
+          gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.00; color: "#ff4040" }
+            GradientStop { position: 0.17; color: "#ffd040" }
+            GradientStop { position: 0.33; color: "#40ff60" }
+            GradientStop { position: 0.50; color: "#40ffff" }
+            GradientStop { position: 0.67; color: "#4060ff" }
+            GradientStop { position: 0.83; color: "#ff40ff" }
+            GradientStop { position: 1.00; color: "#ff4040" }
+          }
+        }
+
+        Rectangle {
+          width: Style.space(16); height: width; radius: width / 2
+          anchors.verticalCenter: parent.verticalCenter
+          x: Math.round(hueRow.hue / 360 * (parent.width - width))
+          color: Qt.hsla(hueRow.hue / 360, 1, 0.5, 1)
+          border.width: 2
+          border.color: panel.foreground
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          function setFrom(x) { hueRow.hue = Model.clamp(x / width, 0, 1) * 360 }
+          onPressed: function(mouse) { hueRow.scrubbing = true; setFrom(mouse.x) }
+          onPositionChanged: function(mouse) { if (pressed) setFrom(mouse.x) }
+          onReleased: { hueRow.scrubbing = false; hueRow.commit() }
         }
       }
     }

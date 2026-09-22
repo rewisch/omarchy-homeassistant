@@ -9,16 +9,22 @@ for notifications, the Omarchy menu, and presence automations.
 
 ## What it does
 
-- **Dashboard** of the entities you picked, in the order you chose. Lights
-  and switches get a toggle, covers get open/stop/close, media players get
-  transport buttons, locks lock and unlock, scenes and scripts run, sensors
-  show their value. Toggles flip immediately and reconcile with the real state.
+- **Dashboard** of the entities you picked, in the order you chose: drag rows
+  with the mouse or move them with `J` / `K`. Group it by area, by type, or
+  by status (`g`) with section headers. Lights and switches get a toggle,
+  covers get open/stop/close, media players get transport buttons, locks lock
+  and unlock, scenes and scripts run, sensors show their value. Toggles flip
+  immediately and reconcile with the real state.
 - **Browser** with instant search across every entity, category chips, and
   area names. Star a row to add it to the dashboard.
-- **Detail view** per entity: brightness and color temperature for lights,
-  target temperature, mode and preset for climate, position for covers,
-  volume and transport for media, speed for fans, options for selects, and
-  every attribute.
+- **Detail view** per entity: brightness, colour temperature, a hue bar,
+  saturation and colour presets for lights; target temperature, mode and
+  preset for climate; position for covers; volume, transport and album art
+  for media; speed for fans; options for selects; and every attribute.
+- **Camera snapshots** in the detail view, refreshed every five seconds
+  while open.
+- **History sparklines** for numeric sensors, with 3 hour, 24 hour and
+  7 day ranges and min/max.
 - **Pin to bar**: any number of entities, their states next to the icon
   ("21.4° · Closed"). The pill turns urgent when a pinned entity goes
   unavailable or a smoke, gas, water, or alarm entity you watch fires.
@@ -83,7 +89,8 @@ Dashboard:
 | `→` / `l` / `e` | details |
 | `p` | pin to bar |
 | `n` | notify me when this changes |
-| `J` / `K` | reorder |
+| `g` | cycle grouping: none, area, type, status |
+| `J` / `K` or mouse drag | reorder (when not grouped) |
 | `x` / `d` | remove from dashboard |
 | `a` / `/` | browse entities |
 | `r` | refresh |
@@ -108,7 +115,7 @@ Details:
 | Key | Action |
 |---|---|
 | `j` / `k` | move between controls |
-| `←` / `→`, `-` / `+` | adjust slider, stepper or chip |
+| `←` / `→`, `-` / `+` | adjust slider, hue, stepper or chip |
 | `Enter` | apply the highlighted chip |
 | `t` | toggle power |
 | `s` | star / unstar |

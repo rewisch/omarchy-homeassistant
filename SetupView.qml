@@ -11,7 +11,9 @@ Item {
   id: setup
 
   property var panel
-  property var ha
+  // Follows the panel's service so a view created before the shared service
+  // was injected picks it up instead of keeping the dormant fallback.
+  property var ha: panel ? panel.ha : null
 
   property bool revealToken: false
   property bool probing: false

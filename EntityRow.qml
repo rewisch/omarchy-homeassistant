@@ -21,6 +21,13 @@ CursorSurface {
   property bool pinned: false
   property bool alerted: false
   property bool showChevron: false
+  // Mouse drag reordering: the owning list sets dragEnabled and reads
+  // `dragging`; it reparents the row while a drag is in flight.
+  property bool dragEnabled: false
+  property int rowIndex: -1
+  readonly property bool dragging: mouse.drag.active
+  signal dragFinished()
+  onDraggingChanged: if (!dragging) row.dragFinished()
 
   signal entered()
   signal bodyClicked()
@@ -52,9 +59,13 @@ CursorSurface {
   implicitHeight: content.implicitHeight + Style.space(14)
 
   MouseArea {
+    id: mouse
     anchors.fill: parent
     hoverEnabled: true
-    cursorShape: Qt.PointingHandCursor
+    cursorShape: row.dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+    drag.target: row.dragEnabled ? row : null
+    drag.axis: Drag.YAxis
+    drag.threshold: 8
     onEntered: row.entered()
     onClicked: row.bodyClicked()
   }
@@ -157,6 +168,16 @@ CursorSurface {
       fontFamily: row.panel.fontFamily
       Layout.alignment: Qt.AlignVCenter
       onClicked: row.starClicked()
+    }
+
+    Text {
+      visible: row.dragEnabled && row.hasCursor && !row.showChevron
+      textFormat: Text.PlainText
+      text: Model.GLYPH.drag
+      color: row.panel.dimmer
+      font.family: row.panel.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      Layout.alignment: Qt.AlignVCenter
     }
 
     Text {

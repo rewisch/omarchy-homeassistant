@@ -81,6 +81,20 @@ Item {
     return id
   }
 
+  // callback(ok, rawResult)
+  function fetchHistory(entityId, startIso, endIso, callback) {
+    var id = send({
+      type: "history/history_during_period",
+      start_time: startIso,
+      end_time: endIso,
+      entity_ids: [entityId],
+      minimal_response: true,
+      no_attributes: true,
+      significant_changes_only: false
+    }, function(ok, result) { callback(ok, result) })
+    if (id === -1) callback(false, null)
+  }
+
   function callService(call) {
     var message = { type: "call_service", domain: call.domain, service: call.service }
     var data = {}

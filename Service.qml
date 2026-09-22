@@ -387,6 +387,53 @@ Item {
     return call(domain, "set_value", { entity_id: entityId, value: value })
   }
 
+  function setLightColor(entityId, hue, saturation) {
+    var h = Math.round(Model.clamp(hue, 0, 360)), sat = Math.round(Model.clamp(saturation, 0, 100))
+    markPending(entityId, "on", { hs_color: [h, sat], color_mode: "hs" })
+    return call("light", "turn_on", { entity_id: entityId, hs_color: [h, sat] })
+  }
+
+  // ---- History ----------------------------------------------------------------
+  property var _historyCache: ({})
+  signal historyReceived(string entityId, int hours, var points)
+
+  function requestHistory(entityId, hours) {
+    var key = entityId + ":" + hours
+    var cached = _historyCache[key]
+    if (cached && Date.now() - cached.at < 60000) {
+      historyReceived(entityId, hours, cached.points)
+      return
+    }
+    if (!activeTransport || !connected || typeof activeTransport.fetchHistory !== "function") return
+    var end = new Date()
+    var start = new Date(end.getTime() - hours * 3600 * 1000)
+    activeTransport.fetchHistory(entityId, start.toISOString(), end.toISOString(), function(ok, raw) {
+      if (!ok) return
+      var points = Model.parseHistory(raw, entityId)
+      _historyCache[key] = { at: Date.now(), points: points }
+      historyReceived(entityId, hours, points)
+    })
+  }
+
+  function setDashboardOrder(ids) {
+    var next = []
+    for (var i = 0; i < ids.length; i++) if (dashboardIds.indexOf(ids[i]) !== -1 && next.indexOf(ids[i]) === -1) next.push(ids[i])
+    for (var j = 0; j < dashboardIds.length; j++) if (next.indexOf(dashboardIds[j]) === -1) next.push(dashboardIds[j])
+    var same = next.length === dashboardIds.length
+    for (var k = 0; same && k < next.length; k++) if (next[k] !== dashboardIds[k]) same = false
+    if (same) return
+    dashboardIds = next
+    persistDashboard()
+  }
+
+  readonly property string dashboardGroup: String(pref("dashboardGroup", "none"))
+  function cycleDashboardGroup() {
+    var idx = Model.groupModeIndex(dashboardGroup)
+    var next = Model.DASHBOARD_GROUPS[(idx + 1) % Model.DASHBOARD_GROUPS.length]
+    setPref("dashboardGroup", next.key)
+    flashAction(next.label)
+  }
+
   function flashAction(text) {
     actionStatus = String(text || "")
     actionClear.restart()

@@ -87,6 +87,41 @@ Item {
     callProc.running = true
   }
 
+  property var _historyQueue: []
+  property var _activeHistory: null
+
+  function fetchHistory(entityId, startIso, endIso, callback) {
+    _historyQueue.push({ entityId: entityId, start: startIso, end: endIso, callback: callback })
+    pumpHistory()
+  }
+
+  function pumpHistory() {
+    if (historyProc.running || _historyQueue.length === 0) return
+    _activeHistory = _historyQueue.shift()
+    var path = "/api/history/period/" + encodeURIComponent(_activeHistory.start)
+      + "?filter_entity_id=" + encodeURIComponent(_activeHistory.entityId)
+      + "&end_time=" + encodeURIComponent(_activeHistory.end)
+      + "&minimal_response&no_attributes"
+    historyProc.command = curlCommand("GET", path, "")
+    historyProc.environment = env("")
+    historyProc.running = true
+  }
+
+  Process {
+    id: historyProc
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      var res = root.splitResponse(historyProc.stdout.text)
+      var job = root._activeHistory
+      root._activeHistory = null
+      var parsed = null
+      if (res.code === 200) { try { parsed = JSON.parse(res.body) } catch (e) { parsed = null } }
+      if (job && job.callback) job.callback(parsed !== null, parsed)
+      root.pumpHistory()
+    }
+  }
+
   function env(body) {
     return ({ HA_TOKEN: root.token, HA_BODY: body })
   }

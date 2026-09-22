@@ -17,6 +17,8 @@ def add(e): STATES[e["entity_id"]] = e
 
 add(ent("light.kitchen", "on", friendly_name="Kitchen", brightness=180, supported_color_modes=["color_temp"], color_mode="color_temp", color_temp_kelvin=3200, min_color_temp_kelvin=2000, max_color_temp_kelvin=6500))
 add(ent("light.living_room", "off", friendly_name="Living Room Lamp", supported_color_modes=["brightness"]))
+add(ent("light.rgb_strip", "on", friendly_name="TV Strip", brightness=200, supported_color_modes=["hs", "color_temp"], color_mode="hs", hs_color=[210, 85], rgb_color=[38, 128, 255], min_color_temp_kelvin=2000, max_color_temp_kelvin=6500))
+add(ent("camera.front_door", "idle", friendly_name="Front Door Camera", entity_picture="/api/camera_proxy/camera.front_door?token=cam-token", access_token="cam-token"))
 add(ent("light.desk", "on", friendly_name="Desk Light", brightness=255, supported_color_modes=["onoff"]))
 add(ent("switch.coffee_machine", "off", friendly_name="Coffee Machine", device_class="outlet"))
 add(ent("switch.garden_pump", "on", friendly_name="Garden Pump"))
@@ -31,7 +33,7 @@ add(ent("binary_sensor.hallway_motion", "on", friendly_name="Hallway Motion", de
 add(ent("climate.living_room", "heat", friendly_name="Living Room Thermostat", current_temperature=21.4, temperature=22.0, min_temp=7, max_temp=30, target_temp_step=0.5, hvac_modes=["off","heat","cool","auto"], preset_modes=["home","away","eco","boost"], preset_mode="home", supported_features=17, temperature_unit="°C"))
 add(ent("cover.garage", "closed", friendly_name="Garage Door", device_class="garage", supported_features=15, current_position=0))
 add(ent("cover.bedroom_blinds", "open", friendly_name="Bedroom Blinds", device_class="blind", supported_features=15, current_position=70))
-add(ent("media_player.living_room_speaker", "playing", friendly_name="Living Room Speaker", media_title="Blue in Green", media_artist="Miles Davis", media_album_name="Kind of Blue", volume_level=0.35, supported_features=21437))
+add(ent("media_player.living_room_speaker", "playing", friendly_name="Living Room Speaker", media_title="Blue in Green", media_artist="Miles Davis", media_album_name="Kind of Blue", volume_level=0.35, supported_features=21437, entity_picture="/api/media_player_proxy/media_player.living_room_speaker?token=art-token&cache=1"))
 add(ent("media_player.tv", "off", friendly_name="TV", supported_features=21437, device_class="tv"))
 add(ent("scene.movie_night", "unknown", friendly_name="Movie Night"))
 add(ent("scene.good_morning", "unknown", friendly_name="Good Morning"))
@@ -52,6 +54,32 @@ for i in range(40):
 def toggle(e):
     e["state"] = "off" if e["state"] == "on" else "on"
 
+import zlib, struct, math, time as _time
+
+def png_frame(w=320, h=180):
+    """Solid-colour PNG whose hue changes over time, so refreshes are visible."""
+    t = _time.time()
+    r = int(128 + 120 * math.sin(t / 3)); g = int(128 + 120 * math.sin(t / 3 + 2)); b = int(128 + 120 * math.sin(t / 3 + 4))
+    raw = b"".join(b"\x00" + bytes([r, g, b]) * w for _ in range(h))
+    def chunk(tag, data): return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", zlib.crc32(tag + data) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+def history_rows(eid, start_iso, end_iso):
+    import datetime as _dt
+    try:
+        start = _dt.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end = _dt.datetime.fromisoformat(end_iso.replace("Z", "+00:00")) if end_iso else _dt.datetime.now(_dt.timezone.utc)
+    except Exception:
+        end = _dt.datetime.now(_dt.timezone.utc); start = end - _dt.timedelta(hours=24)
+    n = 60
+    rows = []
+    base = float(STATES[eid]["state"]) if eid in STATES and STATES[eid]["state"].replace(".", "", 1).isdigit() else 20.0
+    for i in range(n):
+        ts = start + (end - start) * i / (n - 1)
+        v = base + 3 * math.sin(i / 6) + (i % 5) * 0.2
+        rows.append({"state": f"{v:.1f}", "last_updated": ts.isoformat(), "s": f"{v:.1f}", "lu": ts.timestamp()})
+    return rows
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _auth(self):
@@ -60,10 +88,19 @@ class H(BaseHTTPRequestHandler):
         body = json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
+        if self.path.startswith("/api/camera_proxy/") or self.path.startswith("/api/media_player_proxy/"):
+            body = png_frame()
+            self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-cache"); self.end_headers(); self.wfile.write(body); return
         if not self._auth(): return self._send(401, {"message": "Unauthorized"})
         if self.path == "/api/config": return self._send(200, {"location_name": "Casa Wietlisbach", "version": "2026.9.1", "unit_system": {"temperature": "°C"}})
         if self.path == "/api/states": return self._send(200, list(STATES.values()))
         if self.path == "/api/": return self._send(200, {"message": "API running."})
+        if self.path.startswith("/api/history/period/"):
+            from urllib.parse import urlparse, parse_qs, unquote
+            u = urlparse(self.path); q = parse_qs(u.query)
+            eid = q.get("filter_entity_id", [""])[0]; start = unquote(u.path[len("/api/history/period/"):]); end = q.get("end_time", [""])[0]
+            rows = [{"state": r["state"], "last_updated": r["last_updated"], "last_changed": r["last_updated"]} for r in history_rows(eid, start, end)]
+            return self._send(200, [rows])
         if self.path.startswith("/api/states/"):
             e = STATES.get(self.path[len("/api/states/"):]); return self._send(200, e) if e else self._send(404, {"message": "not found"})
         self._send(404, {"message": "not found"})
@@ -83,7 +120,8 @@ class H(BaseHTTPRequestHandler):
                 elif service == "turn_on":
                     e["state"] = "on"
                     if "brightness_pct" in data: a["brightness"] = round(data["brightness_pct"] * 255 / 100)
-                    if "color_temp_kelvin" in data: a["color_temp_kelvin"] = data["color_temp_kelvin"]
+                    if "color_temp_kelvin" in data: a["color_temp_kelvin"] = data["color_temp_kelvin"]; a["color_mode"] = "color_temp"
+                    if "hs_color" in data: a["hs_color"] = data["hs_color"]; a["color_mode"] = "hs"
                     if domain == "scene": e["state"] = "unknown"
                 elif service == "turn_off": e["state"] = "off"
                 elif service == "set_temperature": a["temperature"] = data["temperature"]

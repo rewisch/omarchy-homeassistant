@@ -70,7 +70,10 @@ var GLYPH = {
   spinner: "󰦖",
   bell: "󰂚",
   bellOff: "󰂛",
-  copy: "󰆏"
+  copy: "󰆏",
+  drag: "󰇙",
+  camera: "󰄀",
+  chart: "󰧌"
 }
 
 var DOMAINS = {
@@ -359,6 +362,50 @@ function lightSupportsBrightness(entity) {
   return false
 }
 
+var LIGHT_COLOR_MODES = { hs: true, xy: true, rgb: true, rgbw: true, rgbww: true }
+
+function lightSupportsColor(entity) {
+  var modes = (entity && entity.attributes || {}).supported_color_modes
+  if (!modes || typeof modes.length !== "number") return false
+  for (var i = 0; i < modes.length; i++) if (LIGHT_COLOR_MODES[modes[i]]) return true
+  return false
+}
+
+// Current hue/saturation of a light, derived from whatever colour attribute
+// Home Assistant exposes. Returns null when the light shows white.
+function lightHs(entity) {
+  var attrs = entity && entity.attributes || {}
+  var mode = attrs.color_mode
+  if (mode === "color_temp" || mode === "white") return null
+  var hs = attrs.hs_color
+  if (hs && typeof hs.length === "number" && hs.length >= 2 && isNumeric(hs[0]) && isNumeric(hs[1])) return { h: Number(hs[0]), s: Number(hs[1]) }
+  var rgb = attrs.rgb_color
+  if (rgb && typeof rgb.length === "number" && rgb.length >= 3) return rgbToHs(Number(rgb[0]), Number(rgb[1]), Number(rgb[2]))
+  return null
+}
+
+function rgbToHs(r, g, b) {
+  r /= 255; g /= 255; b /= 255
+  var max = Math.max(r, g, b), min = Math.min(r, g, b)
+  var d = max - min
+  var h = 0
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h *= 60
+    if (h < 0) h += 360
+  }
+  var s = max === 0 ? 0 : d / max
+  return { h: h, s: s * 100 }
+}
+
+var SWATCHES = [
+  { name: "Warm", h: 30, s: 60 }, { name: "Red", h: 0, s: 100 }, { name: "Orange", h: 30, s: 100 },
+  { name: "Yellow", h: 55, s: 100 }, { name: "Green", h: 120, s: 100 }, { name: "Teal", h: 175, s: 100 },
+  { name: "Blue", h: 220, s: 100 }, { name: "Purple", h: 275, s: 100 }, { name: "Pink", h: 320, s: 80 }
+]
+
 function lightSupportsColorTemp(entity) {
   var modes = (entity && entity.attributes || {}).supported_color_modes
   if (!modes || typeof modes.length !== "number") return false
@@ -374,6 +421,98 @@ var CLIMATE_TARGET_TEMP = 1, CLIMATE_TARGET_TEMP_RANGE = 2, CLIMATE_FAN_MODE = 8
 var MEDIA_PAUSE = 1, MEDIA_SEEK = 2, MEDIA_VOLUME_SET = 4, MEDIA_VOLUME_MUTE = 8, MEDIA_PREV = 16, MEDIA_NEXT = 32, MEDIA_TURN_ON = 128, MEDIA_TURN_OFF = 256, MEDIA_PLAY = 16384, MEDIA_SELECT_SOURCE = 2048
 // Fan
 var FAN_SET_SPEED = 1
+
+// ---- History ----------------------------------------------------------------
+
+// Normalises both history formats into [{ t: ms, v: number }]:
+//   WebSocket history/history_during_period: { id: [{ s, lu }, ...] }
+//   REST /api/history/period:                 [[{ state, last_updated }, ...]]
+function parseHistory(raw, entityId) {
+  var rows = null
+  if (raw && !Array.isArray(raw) && raw[entityId]) rows = raw[entityId]
+  else if (Array.isArray(raw)) rows = raw.length > 0 && Array.isArray(raw[0]) ? raw[0] : raw
+  if (!rows || typeof rows.length !== "number") return []
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    if (!r) continue
+    var state = r.s !== undefined ? r.s : r.state
+    if (!isNumeric(state)) continue
+    var t = r.lu !== undefined ? Number(r.lu) * 1000 : Date.parse(r.last_updated || r.last_changed || "")
+    if (!isFinite(t)) continue
+    out.push({ t: t, v: Number(state) })
+  }
+  out.sort(function(a, b) { return a.t - b.t })
+  return out
+}
+
+function historyStats(points) {
+  if (!points || points.length === 0) return null
+  var min = points[0].v, max = points[0].v
+  for (var i = 1; i < points.length; i++) { if (points[i].v < min) min = points[i].v; if (points[i].v > max) max = points[i].v }
+  return { min: min, max: max, first: points[0].v, last: points[points.length - 1].v, count: points.length }
+}
+
+var HISTORY_RANGES = [
+  { key: "3h", label: "3 h", hours: 3 },
+  { key: "24h", label: "24 h", hours: 24 },
+  { key: "7d", label: "7 days", hours: 168 }
+]
+
+function hasHistory(entity) {
+  if (!entity) return false
+  var domain = domainOf(entity.entity_id)
+  return (domain === "sensor" || domain === "number" || domain === "input_number" || domain === "counter") && isNumeric(entity.state)
+}
+
+// ---- Dashboard grouping -----------------------------------------------------
+
+var DASHBOARD_GROUPS = [
+  { key: "none", label: "No grouping", icon: "󰒺" },
+  { key: "area", label: "Group by area", icon: "󰋜" },
+  { key: "type", label: "Group by type", icon: "󰈙" },
+  { key: "status", label: "Group by status", icon: "󰔡" }
+]
+
+function groupModeIndex(key) {
+  for (var i = 0; i < DASHBOARD_GROUPS.length; i++) if (DASHBOARD_GROUPS[i].key === key) return i
+  return 0
+}
+
+function statusGroup(entity) {
+  if (!entity) return "Unavailable"
+  var kind = controlKind(entity)
+  if (kind === "run") return "Scenes & scripts"
+  if (isUnavailable(entity)) return "Unavailable"
+  if (kind === "switch" || kind === "lock" || kind === "cover" || kind === "media") return isOn(entity) ? "On" : "Off"
+  return "Sensors"
+}
+
+// Returns [{ id, group }] in display order: groups in a stable order, your
+// own order kept inside each group. `group` is "" when not grouping.
+function orderDashboard(ids, mode, entityFor, areaNameFor) {
+  var rows = []
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i]
+    var e = entityFor(id)
+    var group = ""
+    if (mode === "area") group = areaNameFor(id) || "No area"
+    else if (mode === "type") group = domainMeta(domainOf(id)).label + "s"
+    else if (mode === "status") group = statusGroup(e)
+    rows.push({ id: id, group: group, index: i })
+  }
+  if (mode === "none") return rows
+  var rank = { "On": 0, "Off": 1, "Sensors": 2, "Scenes & scripts": 3, "Unavailable": 4, "No area": 99 }
+  rows.sort(function(a, b) {
+    if (a.group !== b.group) {
+      var ra = rank[a.group], rb = rank[b.group]
+      if (ra !== undefined || rb !== undefined) return (ra === undefined ? 50 : ra) - (rb === undefined ? 50 : rb)
+      return a.group < b.group ? -1 : 1
+    }
+    return a.index - b.index
+  })
+  return rows
+}
 
 // ---- Browser groups -------------------------------------------------------
 

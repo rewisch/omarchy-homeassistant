@@ -238,7 +238,7 @@ Panel {
   }
 
   function loadView() {
-    var props = { panel: root, ha: ha }
+    var props = { panel: root }
     if (view === "browse") { props.initialQuery = browseInitialQuery; props.pickFor = browseOptions && browseOptions.pickFor ? String(browseOptions.pickFor) : "" }
     if (view === "detail") props.entityId = detailEntityId
     viewLoader.setSource(Qt.resolvedUrl(viewFile(view)), props)

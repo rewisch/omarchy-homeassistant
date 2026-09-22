@@ -11,7 +11,9 @@ Item {
   id: browse
 
   property var panel
-  property var ha
+  // Follows the panel's service so a view created before the shared service
+  // was injected picks it up instead of keeping the dormant fallback.
+  property var ha: panel ? panel.ha : null
   property string initialQuery: ""
   // Set when the browser is used as a picker (automation targets): Enter
   // selects instead of starring and returns to settings.
