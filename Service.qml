@@ -47,8 +47,9 @@ Item {
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 2, 600)
   readonly property bool wsAvailable: wsLoader.status === Loader.Ready && wsLoader.item !== null
   // The QtWebSockets QML module comes from the qt6-websockets package. The
-  // plugin installer never runs code or sudo, so the panel offers this
-  // install itself (floating terminal, same path the network panel uses).
+  // plugin installer never runs code or elevates privileges, so the panel
+  // offers this install itself (floating terminal, same path the network
+  // panel uses).
   readonly property bool wsMissing: transportSetting !== "Polling" && wsLoader.status === Loader.Error
   readonly property string wsPackage: "qt6-websockets"
   readonly property string installLiveCommand: "omarchy-launch-floating-terminal-with-presentation 'omarchy-pkg-add " + wsPackage + " && echo && echo Restarting the Omarchy shell... && omarchy-restart-shell'"

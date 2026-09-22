@@ -5,7 +5,7 @@ a keyboard-first panel where you browse every entity in your home and star
 the ones you want, and a shell service that keeps one live connection open
 for notifications, the Omarchy menu, and presence automations.
 
-![Dashboard](docs/dashboard.png)
+<p align="center"><img src="docs/dashboard.png" width="520" alt="Dashboard"></p>
 
 ## What it does
 
@@ -44,13 +44,23 @@ for notifications, the Omarchy menu, and presence automations.
   install it.
 - **Themed**: colors, fonts and spacing come from the Omarchy theme.
 
-| Browser | Detail |
-|---|---|
-| ![Browser](docs/browser.png) | ![Detail](docs/detail.png) |
-
-| Settings | Omarchy menu | Notifications |
+| Browser | Grouped by area | Colour |
 |---|---|---|
-| ![Settings](docs/settings.png) | ![Menu](docs/menu.png) | ![Notifications](docs/notifications.png) |
+| ![Browser](docs/browser.png) | ![Grouped](docs/grouped.png) | ![Colour](docs/colour.png) |
+
+| Climate | History | Camera |
+|---|---|---|
+| ![Climate](docs/climate.png) | ![History](docs/history.png) | ![Camera](docs/camera.png) |
+
+| Media | Settings | First run |
+|---|---|---|
+| ![Media](docs/media.png) | ![Settings](docs/settings.png) | ![Setup](docs/setup.png) |
+
+| Omarchy menu | Notifications |
+|---|---|
+| ![Menu](docs/menu.png) | ![Notifications](docs/notifications.png) |
+
+All screenshots come from the mock instance in `test/`, not a real home.
 
 ## Install
 
@@ -65,18 +75,42 @@ search, `Enter` to star, `Esc` to return to the dashboard.
 
 For live updates instead of polling, press **Install** on the "Get live
 updates" banner the dashboard shows on first connect (or press `L`). It opens
-Omarchy's floating terminal, installs `qt6-websockets`, and restarts the
-shell. `omarchy plugin add` never runs plugin code or sudo by design, which
-is why this cannot happen automatically. The manual equivalent:
+Omarchy's floating terminal, installs `qt6-websockets` through
+`omarchy pkg add`, and restarts the shell. The plugin itself never elevates
+privileges; the package install happens in that terminal, in front of you,
+only when you press the button. The manual equivalent:
 
 ```bash
 omarchy pkg add qt6-websockets
 omarchy restart shell
 ```
 
+## Dependencies
+
+- Part of every Omarchy install, nothing to add: `curl` (REST fallback and
+  connection check), `wl-copy` (copy command), `omarchy-notification-send`
+  (notifications), `omarchy-shell` (IPC).
+- Optional: `qt6-websockets` for the live WebSocket transport. Without it the
+  plugin polls over REST.
+- No sudo or pkexec is required by the plugin.
+
+## Removal
+
+```bash
+omarchy plugin remove rewisch.homeassistant
+rm -rf ~/.config/omarchy/homeassistant        # connection, dashboard, preferences
+```
+
+If you enabled the Home submenu, turn it off in the panel's settings before
+removing the plugin, or delete the block between the
+`// >>> rewisch.homeassistant` and `// <<< rewisch.homeassistant` markers in
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`. The plugin never touches
+anything else.
+
 Your connection is saved to `~/.config/omarchy/homeassistant/connection.json`
 with owner-only permissions. The dashboard, pins, alerts and preferences live
-next to it in `dashboard.json`.
+next to it in `dashboard.json`. Nothing is written anywhere else unless you
+turn on the Home submenu in settings.
 
 ## Keyboard
 
