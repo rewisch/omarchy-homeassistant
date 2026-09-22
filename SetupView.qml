@@ -17,6 +17,12 @@ Item {
 
   property bool revealToken: false
   property bool probing: false
+  // Explicit per-host allowance for an unencrypted http:// address. Off by
+  // default; only offered when the typed address is cleartext to a
+  // non-loopback host, and saved for exactly that host.
+  property bool allowInsecure: false
+  readonly property string candidateUrl: Model.normalizeUrl(urlField.text)
+  readonly property bool candidateInsecure: candidateUrl !== "" && !Model.isSecureUrl(candidateUrl) && !Model.isLoopbackHost(Model.urlHostname(candidateUrl))
   property string message: ""
   property bool messageIsError: false
   readonly property Item focusItem: urlField.text === "" ? urlField : tokenField
@@ -38,6 +44,7 @@ Item {
   Component.onCompleted: {
     urlField.text = ha.url
     tokenField.text = ha.token
+    allowInsecure = ha.allowInsecureFor !== "" && ha.allowInsecureFor === Model.urlHost(ha.url)
   }
 
   function connectNow() {
@@ -45,7 +52,7 @@ Item {
     message = ""
     messageIsError = false
     probing = true
-    ha.probe(urlField.text, tokenField.text)
+    ha.probe(urlField.text, tokenField.text, allowInsecure && candidateInsecure)
   }
 
   Connections {
@@ -58,7 +65,7 @@ Item {
         // The probe may have settled on https for a bare host; keep that.
         var url = ha.probedUrl !== "" ? ha.probedUrl : urlField.text
         urlField.text = url
-        ha.saveConnection(url, tokenField.text)
+        ha.saveConnection(url, tokenField.text, setup.allowInsecure && setup.candidateInsecure)
         saveTimer.restart()
       }
     }
@@ -79,6 +86,7 @@ Item {
       return
     }
     if (event.key === Qt.Key_Tab) { (field === urlField ? tokenField : urlField).forceActiveFocus(); event.accepted = true; return }
+    if (event.key === Qt.Key_U && (event.modifiers & Qt.ControlModifier)) { if (setup.candidateInsecure) setup.allowInsecure = !setup.allowInsecure; event.accepted = true; return }
     if (event.key === Qt.Key_Backtab) { (field === urlField ? tokenField : urlField).forceActiveFocus(); event.accepted = true; return }
   }
 
@@ -138,7 +146,7 @@ Item {
       TextField {
         id: urlField
         width: parent.width - Style.space(20)
-        placeholderText: "http://homeassistant.local:8123"
+        placeholderText: "https://homeassistant.local:8123"
         foreground: panel.foreground
         font.family: panel.fontFamily
         font.pixelSize: Style.font.body
@@ -174,6 +182,56 @@ Item {
           foreground: panel.dim
           fontFamily: panel.fontFamily
           onClicked: setup.revealToken = !setup.revealToken
+        }
+      }
+    }
+
+    // Cleartext opt-in, shown only when the typed address needs it.
+    Rectangle {
+      visible: setup.candidateInsecure
+      width: parent.width - Style.space(20)
+      x: Style.space(10)
+      radius: Style.cornerRadius
+      color: Style.hoverFillFor(panel.urgent, panel.urgent)
+      implicitHeight: insecureRow.implicitHeight + Style.space(16)
+
+      RowLayout {
+        id: insecureRow
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.margins: Style.space(10)
+        spacing: Style.space(10)
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(2)
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: "Allow unencrypted connection to " + Model.urlHost(setup.candidateUrl)
+            color: panel.foreground
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: "http:// sends your access token and everything you control in the clear; anyone on the network path can read and replay it. Only for a network you fully trust. Prefer https:// whenever your instance offers it.  (Ctrl+U)"
+            color: panel.dim
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+        ToggleSwitch {
+          checked: setup.allowInsecure
+          foreground: panel.urgent
+          hasCursor: false
+          cursorRing: false
+          Layout.alignment: Qt.AlignVCenter
+          onToggled: setup.allowInsecure = !setup.allowInsecure
         }
       }
     }

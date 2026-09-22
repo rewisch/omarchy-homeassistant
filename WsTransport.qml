@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Model.js" as Model
 
 // Live transport over the Home Assistant WebSocket API, driven through
 // ha-ws-bridge.py. The bridge owns the socket and enforces frame, message,
@@ -13,6 +14,8 @@ Item {
   property string baseUrl: ""
   property string token: ""
   property bool enabled: false
+  // The user's explicit allowance for cleartext to exactly this host.
+  property bool allowInsecure: false
 
   readonly property string kind: "websocket"
   property bool connected: false
@@ -65,6 +68,10 @@ Item {
   function openSocket() {
     if (!enabled || unavailable || baseUrl === "" || token === "") return
     if (bridge.running) return
+    if (!Model.connectionAllowed(baseUrl, allowInsecure ? Model.urlHost(baseUrl) : "")) {
+      root.transportError(Model.cleartextMessage(baseUrl))
+      return
+    }
     _manualClose = false
     _authed = false
     _open = false
@@ -75,7 +82,8 @@ Item {
       HA_WS_MAX_FRAME: String(maxFrameBytes),
       HA_WS_MAX_MESSAGE: String(maxMessageBytes),
       HA_WS_MAX_RATE: String(maxMessagesPerSecond),
-      HA_WS_MAX_BURST: String(maxMessageBurst)
+      HA_WS_MAX_BURST: String(maxMessageBurst),
+      HA_WS_ALLOW_CLEARTEXT: allowInsecure ? "1" : "0"
     })
     bridge.running = true
   }
@@ -236,7 +244,10 @@ Item {
     if (msg.event === "open") {
       _open = true
     } else if (msg.event === "error") {
-      root.transportError(String(msg.reason || "Connection error"))
+      var why = String(msg.reason || "Connection error")
+      // The bridge refusing cleartext is final; retrying would only respawn it.
+      if (why.indexOf("cleartext") === 0) _manualClose = true
+      root.transportError(why)
     } else if (msg.event === "closed") {
       var reason = String(msg.reason || "closed")
       if (reason !== "closed" && reason !== "closed by server") root.transportError("Connection reset: " + reason)

@@ -613,12 +613,56 @@ function hasScheme(raw) {
   return /^https?:\/\//i.test(String(raw || "").trim())
 }
 
-// `scheme` is used when the input has none; the stored form always has one.
-function normalizeUrl(raw, scheme) {
+// An address without a scheme becomes https; the stored form always has one.
+function normalizeUrl(raw) {
   var url = String(raw || "").trim()
   if (url === "") return ""
-  if (!hasScheme(url)) url = (scheme || "http") + "://" + url
+  if (!hasScheme(url)) url = "https://" + url
   return url.replace(/\/+$/, "")
+}
+
+// ---- Transport security --------------------------------------------------
+
+function isSecureUrl(url) {
+  return /^https:\/\//i.test(String(url || ""))
+}
+
+// `host[:port]` as it appears in the URL, lower-cased.
+function urlHost(url) {
+  var m = /^[a-z][a-z0-9+.-]*:\/\/([^\/?#]+)/i.exec(String(url || ""))
+  return m ? m[1].toLowerCase() : ""
+}
+
+// The host without its port; IPv6 literals lose their brackets.
+function urlHostname(url) {
+  var h = urlHost(url)
+  if (h.charAt(0) === "[") { var e = h.indexOf("]"); return e === -1 ? h : h.slice(1, e) }
+  var c = h.lastIndexOf(":")
+  return c === -1 ? h : h.slice(0, c)
+}
+
+function isLoopbackHost(hostname) {
+  var h = String(hostname || "").toLowerCase()
+  return h === "localhost" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+
+// The long-lived token travels in every request, so cleartext is refused for
+// every host except loopback. The one exception is a host the user has
+// explicitly allowed in the connection settings; the allowance is stored as
+// that exact `host[:port]`, so it never carries over to another address.
+function connectionAllowed(url, allowInsecureFor) {
+  var u = String(url || "")
+  if (u === "") return false
+  if (isSecureUrl(u)) return true
+  var host = urlHost(u)
+  if (host === "") return false
+  if (isLoopbackHost(urlHostname(u))) return true
+  var allowed = String(allowInsecureFor || "").trim().toLowerCase()
+  return allowed !== "" && allowed === host
+}
+
+function cleartextMessage(url) {
+  return "Unencrypted http:// to " + urlHost(url) + " is refused. Use https://, or allow unencrypted access to this host in the connection settings."
 }
 
 function parseJson(text, fallback) {
@@ -634,7 +678,8 @@ function parseConnectionFile(text) {
   var data = parseJson(text, {})
   return {
     url: normalizeUrl(data.url),
-    token: typeof data.token === "string" ? data.token.trim() : ""
+    token: typeof data.token === "string" ? data.token.trim() : "",
+    allowInsecureFor: typeof data.allowInsecureFor === "string" ? data.allowInsecureFor.trim().toLowerCase() : ""
   }
 }
 
@@ -743,8 +788,10 @@ function alertText(entity) {
 }
 
 
-function serializeConnection(url, token) {
-  return JSON.stringify({ url: normalizeUrl(url), token: String(token || "") }, null, 2) + "\n"
+function serializeConnection(url, token, allowInsecureFor) {
+  var data = { url: normalizeUrl(url), token: String(token || "") }
+  if (allowInsecureFor) data.allowInsecureFor = String(allowInsecureFor).toLowerCase()
+  return JSON.stringify(data, null, 2) + "\n"
 }
 
 // ---- Attributes for the detail view ---------------------------------------

@@ -125,6 +125,7 @@ Item {
     }
     if (ha.status === "connecting") return "Connecting…"
     if (ha.status === "auth_failed") return "Access token rejected"
+    if (ha.status === "insecure") return "Unencrypted connection blocked"
     return "Offline"
   }
 
@@ -218,12 +219,13 @@ Item {
           wrapMode: Text.WordWrap
         }
         Button {
-          text: ha.status === "auth_failed" ? "Fix" : "Retry"
+          readonly property bool fixable: ha.status === "auth_failed" || ha.status === "insecure"
+          text: fixable ? "Fix" : "Retry"
           bordered: true
           foreground: panel.foreground
           fontFamily: panel.fontFamily
           fontSize: Style.font.bodySmall
-          onClicked: ha.status === "auth_failed" ? panel.openSetup() : ha.reconnect()
+          onClicked: fixable ? panel.openSetup() : ha.reconnect()
         }
       }
     }

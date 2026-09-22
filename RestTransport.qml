@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Model.js" as Model
 
 // Polling transport over the Home Assistant REST API. Always available since
 // it only needs curl. The token travels via the process environment, never
@@ -12,6 +13,8 @@ Item {
   property string token: ""
   property bool enabled: false
   property int intervalSec: 10
+  // The user's explicit allowance for cleartext to exactly this host.
+  property bool allowInsecure: false
 
   readonly property string kind: "polling"
   property bool connected: false
@@ -37,6 +40,12 @@ Item {
     connected = false
     if (baseUrl === "" || token === "") return
     check()
+  }
+
+  function allowed() {
+    if (Model.connectionAllowed(baseUrl, allowInsecure ? Model.urlHost(baseUrl) : "")) return true
+    transportError(Model.cleartextMessage(baseUrl))
+    return false
   }
 
   // Stops every process and timer and fails whatever was queued, so nothing
@@ -70,14 +79,14 @@ Item {
   }
 
   function check() {
-    if (checkProc.running) return
+    if (checkProc.running || !allowed()) return
     checkProc.command = curlCommand("GET", "/api/config", "", limitSmall)
     checkProc.environment = env("")
     checkProc.running = true
   }
 
   function fetchStates() {
-    if (!enabled || baseUrl === "" || token === "" || statesProc.running) return
+    if (!enabled || baseUrl === "" || token === "" || statesProc.running || !allowed()) return
     statesProc.command = curlCommand("GET", "/api/states", "", limitStates)
     statesProc.environment = env("")
     statesProc.running = true

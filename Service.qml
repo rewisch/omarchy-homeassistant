@@ -30,11 +30,17 @@ Item {
 
   property string url: ""
   property string token: ""
+  // `host[:port]` the user explicitly allowed cleartext for, or "".
+  property string allowInsecureFor: ""
   property bool configLoaded: false
   readonly property bool configured: url !== "" && token !== ""
+  // Cleartext to anything but loopback is refused unless allowed for exactly
+  // this host. While blocked, no transport runs and no token is sent.
+  readonly property bool insecureAllowed: Model.connectionAllowed(url, allowInsecureFor)
+  readonly property bool cleartextBlocked: configured && !insecureAllowed
 
   // ---- Status -------------------------------------------------------------
-  // idle | connecting | connected | auth_failed | error | unsupported
+  // idle | connecting | connected | auth_failed | error | unsupported | insecure
   property string status: "idle"
   property string lastError: ""
   property string actionStatus: ""
@@ -768,24 +774,24 @@ Item {
 
   // One-off check with candidate credentials, independent of the live
   // transport, so the setup view can validate before anything is saved.
-  // An address without a scheme is tried over https first; plain http only
-  // when nothing answers there, so the token is not sent in the clear when
-  // the instance does offer TLS. `probedUrl` is the address that succeeded.
+  // An address without a scheme is taken as https. Cleartext to a
+  // non-loopback host is refused here, before the token leaves the machine,
+  // unless `allowInsecure` carries the user's explicit choice for this host.
+  // `probedUrl` is the normalised address that succeeded.
   property string probedUrl: ""
   property string _probeBase: ""
-  property string _probeFallback: ""
   property string _probeToken: ""
 
-  function probe(candidateUrl, candidateToken) {
-    var raw = String(candidateUrl || "").trim()
+  function probe(candidateUrl, candidateToken, allowInsecure) {
+    var base = Model.normalizeUrl(candidateUrl)
     var tok = String(candidateToken || "").trim()
-    if (raw === "") { probeFinished(false, "Enter the URL of your Home Assistant instance."); return }
+    if (base === "") { probeFinished(false, "Enter the URL of your Home Assistant instance."); return }
     if (tok === "") { probeFinished(false, "Paste a long-lived access token."); return }
+    if (!Model.connectionAllowed(base, allowInsecure ? Model.urlHost(base) : "")) { probeFinished(false, Model.cleartextMessage(base)); return }
     if (probeProc.running) return
     probedUrl = ""
     _probeToken = tok
-    _probeFallback = Model.hasScheme(raw) ? "" : Model.normalizeUrl(raw, "http")
-    runProbe(Model.hasScheme(raw) ? Model.normalizeUrl(raw) : Model.normalizeUrl(raw, "https"))
+    runProbe(base)
   }
 
   function runProbe(base) {
@@ -795,15 +801,28 @@ Item {
     probeProc.running = true
   }
 
-  function saveConnection(candidateUrl, candidateToken) {
+  function saveConnection(candidateUrl, candidateToken, allowInsecure) {
     var base = Model.normalizeUrl(candidateUrl)
     var tok = String(candidateToken || "").trim()
+    allowInsecureFor = allowInsecure && base !== "" && !Model.isSecureUrl(base) ? Model.urlHost(base) : ""
     url = base
     token = tok
     lastError = ""
     status = configured ? "connecting" : "idle"
-    writeFile(connectionPath, Model.serializeConnection(base, tok))
+    applyCleartextGate()
+    writeFile(connectionPath, Model.serializeConnection(base, tok, allowInsecureFor))
   }
+
+  function applyCleartextGate() {
+    if (cleartextBlocked) {
+      status = "insecure"
+      lastError = Model.cleartextMessage(url)
+    } else if (status === "insecure") {
+      status = configured ? "connecting" : "idle"
+      lastError = ""
+    }
+  }
+  onCleartextBlockedChanged: applyCleartextGate()
 
   function clearConnection() {
     saveConnection("", "")
@@ -852,15 +871,6 @@ Item {
       var text = String(probeProc.stdout.text || "")
       var nl = text.lastIndexOf("\n")
       var code = nl === -1 ? 0 : parseInt(text.slice(nl + 1).trim(), 10)
-      if (code === 0 && root._probeFallback !== "") {
-        // Nothing answered over TLS (refused, reset, or not a TLS port); the
-        // fallback is only taken when the server was not reached at all.
-        var fallback = root._probeFallback
-        root._probeFallback = ""
-        root.runProbe(fallback)
-        return
-      }
-      root._probeFallback = ""
       root._probeToken = ""
       if (text.length >= 1048576) { root.probeFinished(false, "The response was larger than expected for a Home Assistant instance."); return }
       if (code === 200) {
@@ -892,10 +902,12 @@ Item {
     onFileChanged: reload()
     onLoaded: {
       var parsed = Model.parseConnectionFile(text())
+      root.allowInsecureFor = parsed.allowInsecureFor
       root.url = parsed.url
       root.token = parsed.token
       root.configLoaded = true
       if (root.configured && root.status === "idle") root.status = "connecting"
+      root.applyCleartextGate()
     }
     onLoadFailed: {
       root.configLoaded = true
@@ -950,7 +962,8 @@ Item {
     id: ws
     baseUrl: root.url
     token: root.token
-    enabled: root.active && root.useWs && root.configured
+    allowInsecure: root.insecureAllowed
+    enabled: root.active && root.useWs && root.configured && !root.cleartextBlocked
     onStatesReceived: function(states) { root.onStates(states) }
     onEntityStateChanged: function(state) { root.applyStateChange(state) }
     onConfigReceived: function(cfg) { root.haConfig = cfg }
@@ -966,8 +979,9 @@ Item {
     id: rest
     baseUrl: root.url
     token: root.token
+    allowInsecure: root.insecureAllowed
     intervalSec: root.refreshIntervalSec
-    enabled: root.active && root.useRest && root.configured
+    enabled: root.active && root.useRest && root.configured && !root.cleartextBlocked
     onStatesReceived: function(states) { root.onStates(states) }
     onConfigReceived: function(cfg) { root.haConfig = cfg }
     onAuthOk: root.onAuthOk()
@@ -994,7 +1008,7 @@ Item {
 
   function onTransportError(message) {
     lastError = String(message || "Connection error")
-    if (status !== "auth_failed") status = "error"
+    if (status !== "auth_failed" && status !== "insecure") status = "error"
   }
 
   function onCallFinished(call, success, message) {
@@ -1007,6 +1021,7 @@ Item {
   onConfiguredChanged: {
     if (!configured) { status = "idle"; return }
     if (status === "idle") status = "connecting"
+    applyCleartextGate()
   }
 
   onTransportKindChanged: {

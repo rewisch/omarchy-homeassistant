@@ -53,11 +53,22 @@ def fail(reason, code=2):
     sys.exit(code)
 
 
+def is_loopback(hostname):
+    h = (hostname or "").lower()
+    return h == "localhost" or h == "::1" or h.startswith("127.")
+
+
 def parse_url(base):
     u = urllib.parse.urlsplit(base)
     if u.scheme not in ("http", "https", "ws", "wss") or not u.hostname:
         fail("invalid url")
     tls = u.scheme in ("https", "wss")
+    # The token rides in the auth frame, so cleartext is refused for every
+    # host but loopback unless the shell passes the user's explicit per-host
+    # allowance from the connection settings. Enforced here as well so the
+    # bridge fails closed on its own, whatever launched it.
+    if not tls and not is_loopback(u.hostname) and os.environ.get("HA_WS_ALLOW_CLEARTEXT") != "1":
+        fail("cleartext connection refused: use https://, or allow unencrypted access to this host in the connection settings")
     port = u.port or (443 if tls else 80)
     path = (u.path.rstrip("/") or "") + "/api/websocket"
     return u.hostname, port, tls, path

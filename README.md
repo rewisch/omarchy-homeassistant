@@ -69,11 +69,15 @@ omarchy plugin add https://github.com/rewisch/omarchy-homeassistant.git --enable
 
 Then click the house icon in the bar. Enter the address of your instance
 and a long-lived access token (Home Assistant → your profile → Security →
-Long-lived access tokens) and press Connect. An address without a scheme is
-tried over `https://` first and only falls back to `http://` when nothing
-answers there; the result tells you when the connection is unencrypted.
-Press `a` to browse, type to search, `Enter` to star, `Esc` to return to the
-dashboard.
+Long-lived access tokens) and press Connect. An address without a scheme
+means `https://`. Press `a` to browse, type to search, `Enter` to star, `Esc`
+to return to the dashboard.
+
+Plain `http://` is refused for every host except loopback, because the token
+travels in every request. If your instance really has no TLS and sits on a
+network you trust, the setup view shows a clearly marked switch to allow an
+unencrypted connection to that one host; the allowance is stored for that
+exact `host:port` and never carries over to another address.
 
 Live updates work out of the box: the WebSocket connection runs through a
 small bridge script (`ha-ws-bridge.py`, Python standard library only, and
@@ -112,6 +116,13 @@ token you paste, and treats that server as untrusted input:
 - Pending request callbacks and the history cache are bounded.
 - Camera and album-art images load through Qt's image loader from the
   tokened `entity_picture` URL Home Assistant provides.
+
+- **Cleartext fails closed**: `https://` is the default and `http://` is
+  accepted only for loopback addresses or for one host you explicitly
+  allowed in the connection settings (stored as `allowInsecureFor` in
+  `connection.json`). The service, both transports, and `ha-ws-bridge.py`
+  each check this independently, so no token leaves the machine over
+  cleartext unless you asked for exactly that.
 
 The token is sent only in the WebSocket auth message and the REST
 `Authorization` header, never on a command line.

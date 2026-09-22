@@ -42,13 +42,35 @@ test("shellQuote survives single quotes", () => {
   assert.equal(M.shellQuote(null), "''")
 })
 
-test("normalizeUrl and hasScheme", () => {
+test("normalizeUrl defaults to https", () => {
   assert.equal(M.hasScheme("homeassistant.local:8123"), false)
   assert.equal(M.hasScheme("HTTPS://x"), true)
-  assert.equal(M.normalizeUrl(" homeassistant.local:8123/ "), "http://homeassistant.local:8123")
-  assert.equal(M.normalizeUrl("homeassistant.local:8123", "https"), "https://homeassistant.local:8123")
-  assert.equal(M.normalizeUrl("https://ha.example//", "http"), "https://ha.example")
+  assert.equal(M.normalizeUrl(" homeassistant.local:8123/ "), "https://homeassistant.local:8123")
+  assert.equal(M.normalizeUrl("http://ha.example//"), "http://ha.example")
   assert.equal(M.normalizeUrl(""), "")
+})
+
+test("cleartext is refused except for loopback or an explicitly allowed host", () => {
+  assert.equal(M.urlHost("http://Home.local:8123/x"), "home.local:8123")
+  assert.equal(M.urlHostname("http://[::1]:8123"), "::1")
+  assert.equal(M.urlHostname("http://127.0.0.1:8123"), "127.0.0.1")
+  assert.equal(M.connectionAllowed("https://ha.example", ""), true)
+  assert.equal(M.connectionAllowed("http://127.0.0.1:8123", ""), true)
+  assert.equal(M.connectionAllowed("http://localhost:8123", ""), true)
+  assert.equal(M.connectionAllowed("http://[::1]:8123", ""), true)
+  assert.equal(M.connectionAllowed("http://127.1.2.3", ""), true)
+  assert.equal(M.connectionAllowed("http://homeassistant.home.arpa:8123", ""), false, "non-loopback cleartext fails closed")
+  assert.equal(M.connectionAllowed("http://192.168.1.10:8123", ""), false)
+  assert.equal(M.connectionAllowed("http://homeassistant.home.arpa:8123", "homeassistant.home.arpa:8123"), true)
+  assert.equal(M.connectionAllowed("http://homeassistant.home.arpa:8123", "HomeAssistant.home.arpa:8123"), true)
+  assert.equal(M.connectionAllowed("http://homeassistant.home.arpa:8123", "homeassistant.home.arpa"), false, "port is part of the allowance")
+  assert.equal(M.connectionAllowed("http://other.home.arpa:8123", "homeassistant.home.arpa:8123"), false, "allowance is per host")
+  assert.equal(M.connectionAllowed("", "x"), false)
+  assert.ok(M.cleartextMessage("http://h:1").indexOf("h:1") !== -1)
+  const c = M.parseConnectionFile(JSON.stringify({ url: "ha.local", token: " t ", allowInsecureFor: " HA.local:8123 " }))
+  assert.deepEqual(plain(c), { url: "https://ha.local", token: "t", allowInsecureFor: "ha.local:8123" })
+  assert.equal(JSON.parse(M.serializeConnection("http://x:1", "t", "x:1")).allowInsecureFor, "x:1")
+  assert.equal("allowInsecureFor" in JSON.parse(M.serializeConnection("https://x", "t", "")), false)
 })
 
 test("parseDashboardFile drops malformed ids and duplicates", () => {

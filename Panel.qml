@@ -47,6 +47,7 @@ Panel {
     if (ha.status === "connected") return ha.transportKind === "websocket" ? "Live" : "Polling"
     if (ha.status === "connecting") return "Connecting…"
     if (ha.status === "auth_failed") return "Token rejected"
+    if (ha.status === "insecure") return "Unencrypted blocked"
     if (ha.status === "unsupported") return "No transport"
     return "Offline"
   }
