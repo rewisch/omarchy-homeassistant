@@ -149,7 +149,8 @@ Panel {
     function status(): string { return root.statusText }
     function info(): string {
       return JSON.stringify({ shared: root.usingSharedService, transport: root.ha.transportKind, status: root.ha.status, entities: root.ha.entityCount,
-        automations: root.ha.automations, automationsActive: root.ha.automationsActive, presence: [root.ha._lockedState, root.ha._screensaverState] })
+        automations: root.ha.automations, automationsActive: root.ha.automationsActive, presence: [root.ha._lockedState, root.ha._screensaverState],
+        eventsTotal: root.ha.eventsTotal, eventsPerSecond: root.ha.eventsPerSecond, revision: root.ha.revision })
     }
     function toggleEntity(entityId: string): string { return ha.runPrimary(entityId) ? "ok" : "unknown" }
     function turnOn(entityId: string): string { return ha.turnOn(entityId) ? "ok" : "error" }

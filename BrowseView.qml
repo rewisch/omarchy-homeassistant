@@ -26,9 +26,18 @@ Item {
   readonly property Item focusItem: searchField
   readonly property bool ownsKeyboard: searchField.activeFocus
   readonly property var group: Model.GROUPS[groupIndex]
-  readonly property var results: ha.revision >= 0
-    ? Model.searchEntities(ha.entityList, query, group, function(id) { return ha.areaNameFor(id) }, 300)
-    : []
+  // Depends on the entity list, the registry maps and the query — not on the
+  // per-event revision. Rows read live state individually, so a state change
+  // never rebuilds the result list (with thousands of entities that was a
+  // visible stall on every push).
+  readonly property var results: computeResults(ha.entityList, ha.entityArea, ha.areas, query, group)
+
+  function computeResults(list, entityArea, areas, q, grp) {
+    return Model.searchEntities(list, q, grp, function(id) {
+      var areaId = entityArea[id]
+      return areaId ? (areas[areaId] || "") : ""
+    }, 120)
+  }
   readonly property string cursorId: cursorIndex >= 0 && cursorIndex < results.length ? results[cursorIndex].entity_id : ""
 
   implicitHeight: column.implicitHeight
@@ -136,7 +145,7 @@ Item {
 
       Text {
         textFormat: Text.PlainText
-        text: browse.results.length + (browse.results.length >= 300 ? "+" : "")
+        text: browse.results.length + (browse.results.length >= 120 ? "+" : "")
         color: panel.dimmer
         font.family: panel.fontFamily
         font.pixelSize: Style.font.caption

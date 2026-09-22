@@ -90,7 +90,6 @@ Item {
   property var _lastNotifiedState: ({})
 
   signal probeFinished(bool ok, string message)
-  signal entityUpdated(string entityId)
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -179,15 +178,40 @@ Item {
     _initialStatesLoaded = true
   }
 
+  // Pushed events arrive in bursts (a power meter alone can send several per
+  // second). Each revision bump re-evaluates every visible binding, so bumps
+  // are coalesced into one per frame-ish tick instead of one per event.
+  property int eventsTotal: 0
+  property int _eventsWindow: 0
+  property real eventsPerSecond: 0
+
+  function bumpRevision() {
+    if (!revisionTimer.running) revisionTimer.start()
+  }
+
+  Timer {
+    id: revisionTimer
+    interval: 60
+    onTriggered: root.revision++
+  }
+
+  Timer {
+    interval: 5000
+    repeat: true
+    running: root.connected
+    onTriggered: { root.eventsPerSecond = Math.round(root._eventsWindow / 5 * 10) / 10; root._eventsWindow = 0 }
+  }
+
   function applyStateChange(state) {
     if (!state || typeof state.entity_id !== "string") return
+    eventsTotal++
+    _eventsWindow++
     var previous = entities[state.entity_id]
     var isNew = !previous
     entities[state.entity_id] = decorate(state)
     if (pending[state.entity_id]) delete pending[state.entity_id]
     if (isNew) rebuildList()
-    revision++
-    entityUpdated(state.entity_id)
+    bumpRevision()
     if (previous && previous.state !== state.state) maybeAlert(state, previous)
   }
 
