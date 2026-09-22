@@ -40,8 +40,7 @@ for notifications, the Omarchy menu, and presence automations.
   the screensaver starts. Picked in the panel, no YAML.
 - **Live**: one WebSocket connection per shell, shared by every bar
   instance, with instant state pushes and automatic reconnect. Falls back to
-  REST polling when the `qt6-websockets` package is missing and offers to
-  install it.
+  REST polling if the live transport cannot start.
 - **Themed**: colors, fonts and spacing come from the Omarchy theme.
 
 | Browser | Grouped by area | Colour |
@@ -73,26 +72,38 @@ and a long-lived access token (Home Assistant → your profile → Security →
 Long-lived access tokens) and press Connect. Press `a` to browse, type to
 search, `Enter` to star, `Esc` to return to the dashboard.
 
-For live updates instead of polling, press **Install** on the "Get live
-updates" banner the dashboard shows on first connect (or press `L`). It opens
-Omarchy's floating terminal, installs `qt6-websockets` through
-`omarchy pkg add`, and restarts the shell. The plugin itself never elevates
-privileges; the package install happens in that terminal, in front of you,
-only when you press the button. The manual equivalent:
-
-```bash
-omarchy pkg add qt6-websockets
-omarchy restart shell
-```
+Live updates work out of the box: the WebSocket connection runs through a
+small bridge script (`ha-ws-bridge.py`, Python standard library only, and
+Python ships with Omarchy). Nothing needs to be installed.
 
 ## Dependencies
 
-- Part of every Omarchy install, nothing to add: `curl` (REST fallback and
-  connection check), `wl-copy` (copy command), `omarchy-notification-send`
-  (notifications), `omarchy-shell` (IPC).
-- Optional: `qt6-websockets` for the live WebSocket transport. Without it the
-  plugin polls over REST.
-- No sudo or pkexec is required by the plugin.
+- Part of every Omarchy install, nothing to add: `python3` (WebSocket bridge),
+  `curl` (REST fallback and connection check), `wl-copy` (copy command),
+  `omarchy-notification-send` (notifications), `omarchy-shell` (IPC).
+- No sudo or pkexec is required by the plugin, and it installs no packages.
+
+## Security and resource limits
+
+The plugin talks only to the Home Assistant address you enter, with the
+token you paste, and treats that server as untrusted input:
+
+- **WebSocket**: `ha-ws-bridge.py` owns the socket and checks every frame's
+  announced length before reading its payload. Limits per connection:
+  32 MiB per frame, 64 MiB per message, 500 messages per second, 2 GiB and
+  2 million messages per session. Exceeding any of them closes the
+  connection, the shell shows the reason, and the plugin reconnects with
+  backoff. The shell only ever receives one bounded JSON line per message.
+- **REST**: every `curl` call carries `--max-filesize` and is piped through
+  `head -c` at the same limit (1 MiB for config and service calls, 16 MiB
+  for history, 64 MiB for the full state list), so an oversized or endless
+  response is cut before it is buffered and reported instead of parsed.
+- Pending request callbacks and the history cache are bounded.
+- Camera and album-art images load through Qt's image loader from the
+  tokened `entity_picture` URL Home Assistant provides.
+
+The token is sent only in the WebSocket auth message and the REST
+`Authorization` header, never on a command line.
 
 ## Removal
 
@@ -195,7 +206,8 @@ omarchy-shell rewisch.homeassistant refresh
 Inside the panel (`,`): connection, notifications, the menu block, and
 automations. In `Setup → Plugins` or the widget entry in
 `~/.config/omarchy/shell.json`: `transport` (`Auto`, `WebSocket`, `Polling`)
-and `refreshIntervalSec` for polling.
+and `refreshIntervalSec` for polling. `WebSocket` forces the bridge and
+reports an error if it cannot start; `Polling` never starts it.
 
 ## Layout
 
@@ -204,7 +216,8 @@ manifest.json      plugin manifest: service + bar widget, settings schema
 Panel.qml          bar pill, popup, view routing, IPC
 Service.qml        shared connection, entity store, actions, notifications,
                    menu block, automations, persistence
-WsTransport.qml    WebSocket transport (needs qt6-websockets)
+WsTransport.qml    WebSocket transport (drives ha-ws-bridge.py)
+ha-ws-bridge.py    limit-enforcing WebSocket client, standard library only
 RestTransport.qml  curl-based polling transport
 Model.js           pure helpers: icons, state text, search, groups
 HomeView.qml       dashboard

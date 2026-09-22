@@ -60,14 +60,14 @@ Item {
 
   function check() {
     if (checkProc.running) return
-    checkProc.command = curlCommand("GET", "/api/config", "")
+    checkProc.command = curlCommand("GET", "/api/config", "", limitSmall)
     checkProc.environment = env("")
     checkProc.running = true
   }
 
   function fetchStates() {
     if (statesProc.running) return
-    statesProc.command = curlCommand("GET", "/api/states", "")
+    statesProc.command = curlCommand("GET", "/api/states", "", limitStates)
     statesProc.environment = env("")
     statesProc.running = true
   }
@@ -82,7 +82,7 @@ Item {
     if (callProc.running || _callQueue.length === 0) return
     _activeCall = _callQueue.shift()
     var body = JSON.stringify(_activeCall.data || {})
-    callProc.command = curlCommand("POST", "/api/services/" + _activeCall.domain + "/" + _activeCall.service, body)
+    callProc.command = curlCommand("POST", "/api/services/" + _activeCall.domain + "/" + _activeCall.service, body, limitSmall)
     callProc.environment = env(body)
     callProc.running = true
   }
@@ -102,7 +102,7 @@ Item {
       + "?filter_entity_id=" + encodeURIComponent(_activeHistory.entityId)
       + "&end_time=" + encodeURIComponent(_activeHistory.end)
       + "&minimal_response&no_attributes"
-    historyProc.command = curlCommand("GET", path, "")
+    historyProc.command = curlCommand("GET", path, "", limitHistory)
     historyProc.environment = env("")
     historyProc.running = true
   }
@@ -112,7 +112,7 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      var res = root.splitResponse(historyProc.stdout.text)
+      var res = root.splitResponse(historyProc.stdout.text, root.limitHistory)
       var job = root._activeHistory
       root._activeHistory = null
       var parsed = null
@@ -126,20 +126,32 @@ Item {
     return ({ HA_TOKEN: root.token, HA_BODY: body })
   }
 
-  function curlCommand(method, path, body) {
-    var script = "curl -sS -m 12 -X \"$1\" -H \"Authorization: Bearer $HA_TOKEN\" -H \"Content-Type: application/json\""
+  // Response ceilings in bytes. curl aborts early when the server announces
+  // a larger body; `head` cuts a chunked or lying response at the limit so
+  // nothing beyond it is ever buffered by the shell.
+  readonly property int limitSmall: 1024 * 1024
+  readonly property int limitStates: 64 * 1024 * 1024
+  readonly property int limitHistory: 16 * 1024 * 1024
+
+  function curlCommand(method, path, body, limit) {
+    var cap = String(limit || limitSmall)
+    var script = "curl -sS -m 30 --max-filesize " + cap + " -X \"$1\" -H \"Authorization: Bearer $HA_TOKEN\" -H \"Content-Type: application/json\""
     if (method === "POST") script += " --data \"$HA_BODY\""
-    script += " -w '\\n%{http_code}' \"$2\""
+    script += " -w '\\n%{http_code}' \"$2\" | head -c " + cap
     return ["sh", "-c", script, "curl", method, root.baseUrl + path]
   }
 
-  // Splits curl output into { code, body }. The status code is the last line.
-  function splitResponse(raw) {
+  // Splits curl output into { code, body, overflow }. The status code is the
+  // last line; an output that filled the cap is treated as an overflow and
+  // never parsed.
+  function splitResponse(raw, limit) {
     var text = String(raw || "")
+    var cap = limit || limitSmall
+    if (text.length >= cap) return { code: 0, body: "", overflow: true }
     var nl = text.lastIndexOf("\n")
-    if (nl === -1) return { code: 0, body: text }
+    if (nl === -1) return { code: 0, body: text, overflow: false }
     var code = parseInt(text.slice(nl + 1).trim(), 10)
-    return { code: isFinite(code) ? code : 0, body: text.slice(0, nl) }
+    return { code: isFinite(code) ? code : 0, body: text.slice(0, nl), overflow: false }
   }
 
   function describeFailure(code, body, stderr) {
@@ -159,7 +171,8 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      var res = root.splitResponse(checkProc.stdout.text)
+      var res = root.splitResponse(checkProc.stdout.text, root.limitSmall)
+      if (res.overflow) { root.connected = false; root.transportError("Config response exceeded the size limit"); pollTimer.restart(); return }
       if (res.code === 200) {
         var cfg = null
         try { cfg = JSON.parse(res.body) } catch (e) { cfg = null }
@@ -183,7 +196,8 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      var res = root.splitResponse(statesProc.stdout.text)
+      var res = root.splitResponse(statesProc.stdout.text, root.limitStates)
+      if (res.overflow) { root.transportError("States response exceeded the size limit"); return }
       if (res.code === 200) {
         var states = null
         try { states = JSON.parse(res.body) } catch (e) { states = null }
@@ -206,7 +220,7 @@ Item {
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
-      var res = root.splitResponse(callProc.stdout.text)
+      var res = root.splitResponse(callProc.stdout.text, root.limitSmall)
       var call = root._activeCall
       root._activeCall = null
       if (res.code >= 200 && res.code < 300) {

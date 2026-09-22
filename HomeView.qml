@@ -107,18 +107,13 @@ Item {
     if (t === "K") { moveCursorRow(-1); return true }
     if (t === "g" || t === "G") { ha.cycleDashboardGroup(); return true }
     if (t === "e" || t === "E" || t === "i" || t === "I") { if (cursorId !== "") panel.openDetail(cursorId, "home"); return true }
-    if (t === "L") { if (ha.wsMissing) installLiveUpdates(); return true }
     if (t === "n" || t === "N") { if (cursorId !== "") ha.toggleAlert(cursorId); return true }
     return false
   }
 
   function onShown() { cursorActive = false }
 
-  function installLiveUpdates() {
-    if (!panel.bar || typeof panel.bar.run !== "function") return
-    panel.bar.run(ha.installLiveCommand)
-    panel.close()
-  }
+
 
   readonly property string heroMeta: {
     if (!ha.configured) return "Not set up"
@@ -229,72 +224,6 @@ Item {
           fontFamily: panel.fontFamily
           fontSize: Style.font.bodySmall
           onClicked: ha.status === "auth_failed" ? panel.openSetup() : ha.reconnect()
-        }
-      }
-    }
-
-    // Offer the WebSocket module once: the plugin installer cannot pull
-    // packages, so this is where "live updates" gets installed.
-    Rectangle {
-      visible: ha.connected && ha.wsMissing && !ha.pref("liveHintDismissed", false)
-      width: parent.width
-      radius: Style.cornerRadius
-      color: Style.normalFillFor(panel.foreground, panel.accent)
-      implicitHeight: liveRow.implicitHeight + Style.space(16)
-
-      RowLayout {
-        id: liveRow
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.margins: Style.space(10)
-        spacing: Style.space(10)
-
-        Text {
-          textFormat: Text.PlainText
-          text: Model.GLYPH.bolt
-          color: panel.foreground
-          font.family: panel.fontFamily
-          font.pixelSize: Style.font.heading
-        }
-        ColumnLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(1)
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: "Get live updates"
-            color: panel.foreground
-            font.family: panel.fontFamily
-            font.pixelSize: Style.font.body
-            font.bold: true
-          }
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: "States are polled every " + ha.refreshIntervalSec + "s. Installing " + ha.wsPackage + " switches to instant pushes and area names."
-            color: panel.dim
-            font.family: panel.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-        }
-        Button {
-          text: "Install"
-          iconText: Model.GLYPH.check
-          bordered: true
-          selected: true
-          foreground: panel.foreground
-          fontFamily: panel.fontFamily
-          fontSize: Style.font.bodySmall
-          onClicked: home.installLiveUpdates()
-        }
-        Button {
-          text: "Later"
-          foreground: panel.dim
-          fontFamily: panel.fontFamily
-          fontSize: Style.font.bodySmall
-          onClicked: ha.setPref("liveHintDismissed", true)
         }
       }
     }

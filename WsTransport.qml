@@ -1,9 +1,12 @@
 import QtQuick
-import QtWebSockets
+import Quickshell
+import Quickshell.Io
 
-// Live transport over the Home Assistant WebSocket API. Requires the
-// qt6-websockets package; the service falls back to RestTransport when this
-// file fails to load.
+// Live transport over the Home Assistant WebSocket API, driven through
+// ha-ws-bridge.py. The bridge owns the socket and enforces frame, message,
+// rate and per-session ceilings before any payload is buffered; the shell
+// only ever sees one bounded JSON line per message. Python 3 ships with
+// Omarchy, so there is nothing to install.
 Item {
   id: root
 
@@ -13,7 +16,16 @@ Item {
 
   readonly property string kind: "websocket"
   property bool connected: false
-  property bool busy: socket.status === WebSocket.Connecting
+  readonly property bool busy: bridge.running && !connected
+  // Set when the bridge cannot run at all (no python3); the service then
+  // falls back to REST polling for the rest of the session.
+  property bool unavailable: false
+
+  // Ceilings handed to the bridge. Values are bytes and counts.
+  readonly property int maxFrameBytes: 32 * 1024 * 1024
+  readonly property int maxMessageBytes: 64 * 1024 * 1024
+  readonly property int maxMessagesPerSecond: 500
+  readonly property int maxPendingCalls: 500
 
   signal statesReceived(var states)
   signal entityStateChanged(var newState)
@@ -27,16 +39,17 @@ Item {
 
   property int _nextId: 1
   property var _pending: ({})
+  property var _pendingOrder: []
   property int _subscriptionId: -1
   property int _notificationSubId: -1
   property int _reconnectMs: 1500
   property bool _authed: false
   property bool _manualClose: false
+  property bool _open: false
 
-  readonly property string socketUrl: {
-    var url = String(baseUrl || "").replace(/\/+$/, "")
-    if (url === "") return ""
-    return url.replace(/^http/i, "ws") + "/api/websocket"
+  readonly property string bridgePath: {
+    var url = String(Qt.resolvedUrl("ha-ws-bridge.py"))
+    return url.indexOf("file://") === 0 ? url.slice(7) : url
   }
 
   onEnabledChanged: enabled ? openSocket() : closeSocket()
@@ -44,21 +57,30 @@ Item {
   onTokenChanged: if (enabled) reconnectNow()
 
   function openSocket() {
-    if (!enabled || socketUrl === "" || token === "") return
+    if (!enabled || unavailable || baseUrl === "" || token === "") return
+    if (bridge.running) return
     _manualClose = false
     _authed = false
-    socket.active = false
-    socket.url = socketUrl
-    socket.active = true
+    _open = false
+    _pending = ({})
+    _pendingOrder = []
+    bridge.environment = ({
+      HA_URL: baseUrl,
+      HA_WS_MAX_FRAME: String(maxFrameBytes),
+      HA_WS_MAX_MESSAGE: String(maxMessageBytes),
+      HA_WS_MAX_RATE: String(maxMessagesPerSecond)
+    })
+    bridge.running = true
   }
 
   function closeSocket() {
     _manualClose = true
     reconnectTimer.stop()
     pingTimer.stop()
-    socket.active = false
+    if (bridge.running) bridge.running = false
     connected = false
     _authed = false
+    _open = false
   }
 
   function reconnectNow() {
@@ -68,16 +90,24 @@ Item {
   }
 
   function refresh() {
-    if (!connected) { if (enabled && socket.status !== WebSocket.Open) openSocket(); return }
+    if (!connected) { if (enabled && !bridge.running) openSocket(); return }
     send({ type: "get_states" }, function(ok, result) { if (ok && result) root.statesReceived(result) })
   }
 
   function send(message, callback) {
-    if (socket.status !== WebSocket.Open) return -1
+    if (!bridge.running || !_open) return -1
     var id = _nextId++
     message.id = id
-    if (callback) _pending[id] = callback
-    socket.sendTextMessage(JSON.stringify(message))
+    if (callback) {
+      _pending[id] = callback
+      _pendingOrder.push(id)
+      // A server that never answers must not grow this map without bound.
+      while (_pendingOrder.length > maxPendingCalls) {
+        var stale = _pendingOrder.shift()
+        delete _pending[stale]
+      }
+    }
+    bridge.write(JSON.stringify(message) + "\n")
     return id
   }
 
@@ -122,13 +152,19 @@ Item {
     pingTimer.restart()
   }
 
-  function handleMessage(text) {
+  function handleLine(line) {
+    var text = String(line || "")
+    if (text.length === 0) return
+    if (text.length > maxMessageBytes) return
     var msg = null
     try { msg = JSON.parse(text) } catch (e) { return }
     if (!msg || typeof msg.type !== "string") return
     switch (msg.type) {
+    case "_transport":
+      handleTransport(msg)
+      break
     case "auth_required":
-      socket.sendTextMessage(JSON.stringify({ type: "auth", access_token: root.token }))
+      bridge.write(JSON.stringify({ type: "auth", access_token: root.token }) + "\n")
       break
     case "auth_ok":
       _authed = true
@@ -140,12 +176,14 @@ Item {
     case "auth_invalid":
       _manualClose = true
       root.authInvalid(msg.message || "Authentication failed. Check the access token.")
-      socket.active = false
+      if (bridge.running) bridge.running = false
       break
     case "result": {
       var cb = _pending[msg.id]
       if (cb) {
         delete _pending[msg.id]
+        var at = _pendingOrder.indexOf(msg.id)
+        if (at !== -1) _pendingOrder.splice(at, 1)
         cb(msg.success === true, msg.result, msg.error)
       }
       break
@@ -161,40 +199,54 @@ Item {
       break
     }
     case "ping":
-      socket.sendTextMessage(JSON.stringify({ id: msg.id, type: "pong" }))
+      bridge.write(JSON.stringify({ id: msg.id, type: "pong" }) + "\n")
       break
     case "pong":
       break
     }
   }
 
-  WebSocket {
-    id: socket
-    active: false
-    onTextMessageReceived: function(message) { root.handleMessage(message) }
-    onStatusChanged: function(status) {
-      if (status === WebSocket.Open) return
-      if (status === WebSocket.Error) {
-        root.connected = false
-        root._authed = false
-        root.transportError(socket.errorString || "WebSocket error")
-        root.scheduleReconnect()
-      } else if (status === WebSocket.Closed) {
-        var wasConnected = root.connected
-        root.connected = false
-        root._authed = false
-        pingTimer.stop()
-        root._pending = ({})
-        if (!root._manualClose) {
-          if (wasConnected) root.transportError("Connection closed")
-          root.scheduleReconnect()
-        }
+  function handleTransport(msg) {
+    if (msg.event === "open") {
+      _open = true
+    } else if (msg.event === "error") {
+      root.transportError(String(msg.reason || "Connection error"))
+    } else if (msg.event === "closed") {
+      var reason = String(msg.reason || "closed")
+      if (reason !== "closed" && reason !== "closed by server") root.transportError("Connection reset: " + reason)
+    }
+  }
+
+  Process {
+    id: bridge
+    command: ["python3", root.bridgePath]
+    stdinEnabled: true
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.handleLine(line) }
+    }
+    stderr: StdioCollector { waitForEnd: false }
+    onExited: function(exitCode) {
+      var wasConnected = root.connected
+      root.connected = false
+      root._authed = false
+      root._open = false
+      pingTimer.stop()
+      root._pending = ({})
+      root._pendingOrder = []
+      if (exitCode === 127 || exitCode === 126) {
+        root.unavailable = true
+        root.transportError("Live transport needs python3; falling back to polling")
+        return
       }
+      if (root._manualClose) return
+      if (wasConnected && exitCode === 0) root.transportError("Connection closed")
+      root.scheduleReconnect()
     }
   }
 
   function scheduleReconnect() {
-    if (!enabled || _manualClose) return
+    if (!enabled || _manualClose || unavailable) return
     reconnectTimer.interval = _reconnectMs
     _reconnectMs = Math.min(30000, Math.round(_reconnectMs * 1.8))
     reconnectTimer.restart()

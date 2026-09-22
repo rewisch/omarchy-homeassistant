@@ -152,6 +152,15 @@ def handle_ws(conn):
         except OSError: pass
         print("WS client disconnected", flush=True)
 
+def blast(size, count):
+    """Send `count` text frames of `size` bytes to every subscriber: the limit test."""
+    payload = json.dumps({"type": "event", "junk": "x" * max(0, size - 40)})
+    with LOCK:
+        for conn, sub in list(CLIENTS):
+            for _ in range(count):
+                try: conn.sendall(frame(payload))
+                except OSError: break
+
 def push_notification(title, message):
     nid = "n%d" % int(time.time())
     with LOCK:
@@ -161,6 +170,10 @@ def push_notification(title, message):
 class Handler(mock_ha.H):
     protocol_version = "HTTP/1.1"
     def do_POST(self):
+        if self.path == "/mock/blast":
+            n = int(self.headers.get("Content-Length", 0)); data = json.loads(self.rfile.read(n) or b"{}")
+            threading.Thread(target=blast, args=(int(data.get("size", 1024)), int(data.get("count", 1))), daemon=True).start()
+            return self._send(200, {"ok": True})
         if self.path == "/mock/notify":
             n = int(self.headers.get("Content-Length", 0)); data = json.loads(self.rfile.read(n) or b"{}")
             push_notification(data.get("title", "Mock"), data.get("message", ""))

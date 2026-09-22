@@ -45,17 +45,13 @@ Item {
 
   readonly property string transportSetting: String(setting("transport", "Auto"))
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 2, 600)
-  readonly property bool wsAvailable: wsLoader.status === Loader.Ready && wsLoader.item !== null
-  // The QtWebSockets QML module comes from the qt6-websockets package. The
-  // plugin installer never runs code or elevates privileges, so the panel
-  // offers this install itself (floating terminal, same path the network
-  // panel uses).
-  readonly property bool wsMissing: transportSetting !== "Polling" && wsLoader.status === Loader.Error
-  readonly property string wsPackage: "qt6-websockets"
-  readonly property string installLiveCommand: "omarchy-launch-floating-terminal-with-presentation 'omarchy-pkg-add " + wsPackage + " && echo && echo Restarting the Omarchy shell... && omarchy-restart-shell'"
+  // The live transport runs through ha-ws-bridge.py (python3 ships with
+  // Omarchy). If the bridge cannot start at all, polling takes over.
+  readonly property bool wsAvailable: !ws.unavailable
+  readonly property bool wsMissing: false
   readonly property bool useWs: wsAvailable && transportSetting !== "Polling"
   readonly property bool useRest: !useWs && transportSetting !== "WebSocket"
-  readonly property var activeTransport: useWs ? wsLoader.item : (useRest ? rest : null)
+  readonly property var activeTransport: useWs ? ws : (useRest ? rest : null)
   readonly property string transportKind: useWs ? "websocket" : (useRest ? "polling" : "none")
   readonly property string transportLabel: transportKind === "websocket" ? "Live" : (transportKind === "polling" ? "Polling every " + refreshIntervalSec + "s" : "No transport")
   readonly property bool busy: activeTransport ? activeTransport.busy : false
@@ -442,6 +438,8 @@ Item {
     activeTransport.fetchHistory(entityId, start.toISOString(), end.toISOString(), function(ok, raw) {
       if (!ok) return
       var points = Model.parseHistory(raw, entityId)
+      var keys = Object.keys(_historyCache)
+      if (keys.length >= 40) delete _historyCache[keys[0]]
       _historyCache[key] = { at: Date.now(), points: points }
       historyReceived(entityId, hours, points)
     })
@@ -478,7 +476,7 @@ Item {
   function reconnect() {
     lastError = ""
     if (!configured) return
-    if (useWs && wsLoader.item) wsLoader.item.reconnectNow()
+    if (useWs) ws.reconnectNow()
     else if (useRest) rest.restart()
   }
 
@@ -761,7 +759,7 @@ Item {
     if (tok === "") { probeFinished(false, "Paste a long-lived access token."); return }
     if (probeProc.running) return
     probeProc.environment = ({ HA_TOKEN: tok })
-    probeProc.command = ["sh", "-c", "curl -sS -m 10 -H \"Authorization: Bearer $HA_TOKEN\" -w '\\n%{http_code}' \"$1\"", "curl", base + "/api/config"]
+    probeProc.command = ["sh", "-c", "curl -sS -m 10 --max-filesize 1048576 -H \"Authorization: Bearer $HA_TOKEN\" -w '\\n%{http_code}' \"$1\" | head -c 1048576", "curl", base + "/api/config"]
     probeProc.running = true
   }
 
@@ -817,6 +815,7 @@ Item {
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
       var text = String(probeProc.stdout.text || "")
+      if (text.length >= 1048576) { root.probeFinished(false, "The response was larger than expected for a Home Assistant instance."); return }
       var nl = text.lastIndexOf("\n")
       var code = nl === -1 ? 0 : parseInt(text.slice(nl + 1).trim(), 10)
       if (code === 200) {
@@ -899,31 +898,20 @@ Item {
 
   // ---- Transports ---------------------------------------------------------
 
-  Loader {
-    id: wsLoader
-    active: root.transportSetting !== "Polling"
-    source: Qt.resolvedUrl("WsTransport.qml")
-    onStatusChanged: {
-      if (status === Loader.Error) console.log("homeassistant: QtWebSockets unavailable, using REST polling")
-    }
-  }
-
-  Binding { target: wsLoader.item; property: "baseUrl"; value: root.url; when: wsLoader.item !== null }
-  Binding { target: wsLoader.item; property: "token"; value: root.token; when: wsLoader.item !== null }
-  Binding { target: wsLoader.item; property: "enabled"; value: root.active && root.useWs && root.configured; when: wsLoader.item !== null }
-
-  Connections {
-    target: wsLoader.item
-    ignoreUnknownSignals: true
-    function onStatesReceived(states) { root.onStates(states) }
-    function onEntityStateChanged(state) { root.applyStateChange(state) }
-    function onConfigReceived(cfg) { root.haConfig = cfg }
-    function onRegistryReceived(kind, rows) { root.applyRegistry(kind, rows) }
-    function onPersistentNotifications(kind, notifications) { root.onPersistentNotifications(kind, notifications) }
-    function onAuthOk() { root.onAuthOk() }
-    function onAuthInvalid(message) { root.onAuthInvalid(message) }
-    function onTransportError(message) { root.onTransportError(message) }
-    function onCallFinished(call, success, message) { root.onCallFinished(call, success, message) }
+  WsTransport {
+    id: ws
+    baseUrl: root.url
+    token: root.token
+    enabled: root.active && root.useWs && root.configured
+    onStatesReceived: function(states) { root.onStates(states) }
+    onEntityStateChanged: function(state) { root.applyStateChange(state) }
+    onConfigReceived: function(cfg) { root.haConfig = cfg }
+    onRegistryReceived: function(kind, rows) { root.applyRegistry(kind, rows) }
+    onPersistentNotifications: function(kind, notifications) { root.onPersistentNotifications(kind, notifications) }
+    onAuthOk: root.onAuthOk()
+    onAuthInvalid: function(message) { root.onAuthInvalid(message) }
+    onTransportError: function(message) { root.onTransportError(message) }
+    onCallFinished: function(call, success, message) { root.onCallFinished(call, success, message) }
   }
 
   RestTransport {
@@ -976,7 +964,7 @@ Item {
   onTransportKindChanged: {
     if (transportKind === "none" && configured) {
       status = "unsupported"
-      lastError = transportSetting === "WebSocket" ? "WebSocket forced but qt6-websockets is not installed." : "No transport available."
+      lastError = transportSetting === "WebSocket" ? "WebSocket forced but the live transport cannot start (python3 missing)." : "No transport available."
     }
   }
 

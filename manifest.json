@@ -36,7 +36,7 @@
           "Polling"
         ],
         "defaultValue": "Auto",
-        "description": "Auto uses a live WebSocket when the qt6-websockets package is installed and falls back to REST polling otherwise."
+        "description": "Auto uses the live WebSocket bridge (python3) and falls back to REST polling if it cannot start."
       },
       {
         "key": "refreshIntervalSec",
