@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "rewisch.homeassistant",
+  "name": "Home Assistant",
+  "version": "0.1.0",
+  "author": "Reto Wietlisbach",
+  "license": "MIT",
+  "description": "Home Assistant in the Omarchy bar: live entity states, a curated dashboard you pick yourself, and a searchable browser for every entity.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Home Assistant",
+    "description": "Bar pill with a keyboard-friendly panel: pick entities, toggle lights and switches, adjust brightness and climate, run scenes.",
+    "category": "Home",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 10,
+      "transport": "Auto"
+    },
+    "schema": [
+      {
+        "key": "transport",
+        "type": "enum",
+        "label": "Transport",
+        "options": [
+          "Auto",
+          "WebSocket",
+          "Polling"
+        ],
+        "defaultValue": "Auto",
+        "description": "Auto uses a live WebSocket when the qt6-websockets package is installed and falls back to REST polling otherwise."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Polling interval (seconds)",
+        "min": 2,
+        "max": 600,
+        "step": 1,
+        "defaultValue": 10,
+        "description": "Only used while polling. WebSocket updates are pushed instantly."
+      }
+    ]
+  }
+}
