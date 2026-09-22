@@ -1,5 +1,10 @@
 # Test tooling
 
+`node --test test/test_model.js` runs the unit tests in `test_model.js` against `Model.js`.
+The menu-splice tests parse their output with a replica of the shell's JSONC
+reader, so a change that breaks `~/.config/omarchy/extensions/omarchy-menu.jsonc`
+fails here first.
+
 Two dependency-free mock Home Assistant servers for developing the plugin
 without touching a real instance. Token is `mock-token-123`.
 

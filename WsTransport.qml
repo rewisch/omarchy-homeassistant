@@ -25,6 +25,7 @@ Item {
   readonly property int maxFrameBytes: 32 * 1024 * 1024
   readonly property int maxMessageBytes: 64 * 1024 * 1024
   readonly property int maxMessagesPerSecond: 500
+  readonly property int maxMessageBurst: 5000
   readonly property int maxPendingCalls: 500
 
   signal statesReceived(var states)
@@ -46,10 +47,15 @@ Item {
   property bool _authed: false
   property bool _manualClose: false
   property bool _open: false
+  // Set when a reconnect is requested while the bridge is still shutting
+  // down: Quickshell keeps `running` true until the child has exited, so the
+  // new bridge is started from onExited instead.
+  property bool _reopenOnExit: false
 
   readonly property string bridgePath: {
     var url = String(Qt.resolvedUrl("ha-ws-bridge.py"))
-    return url.indexOf("file://") === 0 ? url.slice(7) : url
+    // A home directory with a space or non-ASCII characters is percent-encoded here.
+    return decodeURIComponent(url.indexOf("file://") === 0 ? url.slice(7) : url)
   }
 
   onEnabledChanged: enabled ? openSocket() : closeSocket()
@@ -68,15 +74,18 @@ Item {
       HA_URL: baseUrl,
       HA_WS_MAX_FRAME: String(maxFrameBytes),
       HA_WS_MAX_MESSAGE: String(maxMessageBytes),
-      HA_WS_MAX_RATE: String(maxMessagesPerSecond)
+      HA_WS_MAX_RATE: String(maxMessagesPerSecond),
+      HA_WS_MAX_BURST: String(maxMessageBurst)
     })
     bridge.running = true
   }
 
   function closeSocket() {
     _manualClose = true
+    _reopenOnExit = false
     reconnectTimer.stop()
     pingTimer.stop()
+    failPending("Connection closed")
     if (bridge.running) bridge.running = false
     connected = false
     _authed = false
@@ -86,7 +95,22 @@ Item {
   function reconnectNow() {
     closeSocket()
     _reconnectMs = 1500
-    if (enabled) openSocket()
+    if (!enabled) return
+    if (bridge.running) _reopenOnExit = true
+    else openSocket()
+  }
+
+  // Answers every outstanding request callback with a failure so nothing
+  // upstream waits forever for a reply that cannot come.
+  function failPending(reason) {
+    var order = _pendingOrder
+    var map = _pending
+    _pending = ({})
+    _pendingOrder = []
+    for (var i = 0; i < order.length; i++) {
+      var cb = map[order[i]]
+      if (cb) cb(false, null, { message: reason })
+    }
   }
 
   function refresh() {
@@ -104,7 +128,9 @@ Item {
       // A server that never answers must not grow this map without bound.
       while (_pendingOrder.length > maxPendingCalls) {
         var stale = _pendingOrder.shift()
+        var staleCb = _pending[stale]
         delete _pending[stale]
+        if (staleCb) staleCb(false, null, { message: "No response from Home Assistant" })
       }
     }
     bridge.write(JSON.stringify(message) + "\n")
@@ -232,11 +258,15 @@ Item {
       root._authed = false
       root._open = false
       pingTimer.stop()
-      root._pending = ({})
-      root._pendingOrder = []
+      root.failPending("Connection closed")
       if (exitCode === 127 || exitCode === 126) {
         root.unavailable = true
         root.transportError("Live transport needs python3; falling back to polling")
+        return
+      }
+      if (root._reopenOnExit) {
+        root._reopenOnExit = false
+        root.openSocket()
         return
       }
       if (root._manualClose) return

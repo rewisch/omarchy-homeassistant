@@ -13,7 +13,6 @@ No third-party modules; only the Python standard library.
 import base64
 import json
 import os
-import select
 import socket
 import ssl
 import struct
@@ -25,6 +24,9 @@ import urllib.parse
 MAX_FRAME = int(os.environ.get("HA_WS_MAX_FRAME", 32 * 1024 * 1024))
 MAX_MESSAGE = int(os.environ.get("HA_WS_MAX_MESSAGE", 64 * 1024 * 1024))
 MAX_MESSAGES_PER_SECOND = int(os.environ.get("HA_WS_MAX_RATE", 500))
+# Token bucket: sustained MAX_MESSAGES_PER_SECOND, with this much headroom for
+# the burst a restarting Home Assistant emits while its integrations load.
+MAX_MESSAGE_BURST = int(os.environ.get("HA_WS_MAX_BURST", 5000))
 MAX_SESSION_BYTES = int(os.environ.get("HA_WS_MAX_SESSION", 2 * 1024 * 1024 * 1024))
 MAX_MESSAGES_PER_SESSION = int(os.environ.get("HA_WS_MAX_SESSION_MESSAGES", 2_000_000))
 CONNECT_TIMEOUT = 15
@@ -107,15 +109,26 @@ def connect(host, port, tls, path):
 
 
 def recv_exact(sock, n, pending):
-    """Read exactly n bytes, using and updating the pending buffer."""
+    """Read exactly n bytes, using and updating the pending buffer.
+
+    Chunks are collected and joined once: repeated `bytes +=` copies the whole
+    buffer per receive, which is quadratic and costs close to a second for a
+    frame at the 32 MiB cap.
+    """
     buf = pending[0]
-    while len(buf) < n:
-        chunk = sock.recv(min(65536, n - len(buf)))
+    if len(buf) >= n:
+        pending[0] = buf[n:]
+        return buf[:n]
+    parts = [buf]
+    got = len(buf)
+    while got < n:
+        chunk = sock.recv(min(65536, n - got))
         if not chunk:
             raise ConnectionError("connection closed")
-        buf += chunk
-    pending[0] = buf[n:]
-    return buf[:n]
+        parts.append(chunk)
+        got += len(chunk)
+    pending[0] = b""
+    return b"".join(parts)
 
 
 def send_frame(sock, opcode, payload, lock):
@@ -128,13 +141,15 @@ def send_frame(sock, opcode, payload, lock):
     else:
         header += bytes([0x80 | 127]) + struct.pack("!Q", n)
     mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload)) if n < 65536 else _mask_fast(payload, mask)
     with lock:
-        sock.sendall(header + mask + masked)
+        sock.sendall(header + mask + _mask_fast(payload, mask))
 
 
 def _mask_fast(payload, mask):
-    # Mask in 4-byte words via int.from_bytes to avoid a per-byte Python loop.
+    # XOR in 4-byte words via int.from_bytes to avoid a per-byte Python loop.
+    # Symmetric, so it also unmasks.
+    if not payload:
+        return payload
     reps = (len(payload) + 3) // 4
     key = int.from_bytes(mask * reps, "big")
     padded = payload + b"\x00" * (reps * 4 - len(payload))
@@ -180,8 +195,9 @@ def main():
     pending = [rest]
     session_bytes = 0
     session_messages = 0
-    window_start = time.monotonic()
-    window_count = 0
+    # Token bucket for the message rate: starts full, refills continuously.
+    tokens = float(MAX_MESSAGE_BURST)
+    last_refill = time.monotonic()
     fragments = []
     fragments_len = 0
     fragment_opcode = 0
@@ -212,9 +228,10 @@ def main():
             if session_bytes > MAX_SESSION_BYTES:
                 reason = "session byte limit reached"
                 break
-            if masked:
-                recv_exact(sock, 4, pending)  # servers must not mask; tolerate but ignore
+            mask = recv_exact(sock, 4, pending) if masked else None  # servers must not mask (RFC 6455 5.1); tolerate
             payload = recv_exact(sock, length, pending) if length else b""
+            if mask:
+                payload = _mask_fast(payload, mask)
             if opcode == 0x8:
                 reason = "closed by server"
                 break
@@ -240,14 +257,13 @@ def main():
             if fragment_opcode != 0x1:
                 continue
             now = time.monotonic()
-            if now - window_start >= 1.0:
-                window_start = now
-                window_count = 0
-            window_count += 1
+            tokens = min(MAX_MESSAGE_BURST, tokens + (now - last_refill) * MAX_MESSAGES_PER_SECOND)
+            last_refill = now
             session_messages += 1
-            if window_count > MAX_MESSAGES_PER_SECOND:
+            if tokens < 1.0:
                 reason = "message rate limit exceeded"
                 break
+            tokens -= 1.0
             if session_messages > MAX_MESSAGES_PER_SESSION:
                 reason = "session message limit reached"
                 break

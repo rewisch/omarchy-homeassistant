@@ -72,6 +72,19 @@ Item {
       detail.historyLoading = false
       spark.requestPaint()
     }
+    function onHistoryFailed(id, hours) {
+      if (id !== detail.entityId || hours !== detail.historyHours) return
+      detail.historyLoading = false
+    }
+  }
+
+  // Keeps the relative "Last changed" row ticking while the panel is open.
+  property int clockTick: 0
+  Timer {
+    interval: 30000
+    repeat: true
+    running: detail.panel ? detail.panel.opened === true : false
+    onTriggered: detail.clockTick++
   }
   property var rowItems: ({})
   readonly property var rowOrder: ["power", "brightness", "colortemp", "hue", "saturation", "swatches", "target", "hvac", "preset", "fanpct", "coverbtn", "position", "transport", "volume", "lock", "run", "options", "number", "range"]
@@ -641,7 +654,7 @@ Item {
       boundsBehavior: Flickable.StopAtBounds
       interactive: contentHeight > height
       ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-      model: Model.attributeRows(detail.entity)
+      model: detail.clockTick >= 0 ? Model.attributeRows(detail.entity) : []
       delegate: Item {
         required property var modelData
         width: ListView.view.width
@@ -761,7 +774,14 @@ Item {
     property real value: 0
     property var formatValue: function(v) { return String(v) }
     signal committed(real value)
-    property real shownValue: slider.dragging ? slider.liveValue : value
+    // What the row shows and edits. `value` is bound to the entity by the
+    // instance and is never assigned here: that would replace the binding
+    // and freeze the row at the last local number once another client
+    // changes the light. Edits land in `local`, which follows `value` again
+    // as soon as no edit is in flight.
+    property real local: value
+    onValueChanged: if (!commitTimer.running && !slider.dragging) local = value
+    property real shownValue: slider.dragging ? slider.liveValue : local
 
     width: parent ? parent.width : 0
     foreground: panel.foreground
@@ -770,9 +790,9 @@ Item {
     Component.onCompleted: detail.registerRow(rowId, sliderRow)
 
     function adjust(dx) {
-      var next = Model.clamp(Math.round((value + dx * step) / step) * step, minimum, maximum)
-      if (next === value) return
-      value = next
+      var next = Model.clamp(Math.round((local + dx * step) / step) * step, minimum, maximum)
+      if (next === local) return
+      local = next
       commitTimer.restart()
     }
     function activate() {}
@@ -780,7 +800,7 @@ Item {
     Timer {
       id: commitTimer
       interval: 250
-      onTriggered: sliderRow.committed(sliderRow.value)
+      onTriggered: sliderRow.committed(sliderRow.local)
     }
 
     MouseArea {
@@ -824,8 +844,8 @@ Item {
         minimum: sliderRow.minimum
         maximum: sliderRow.maximum
         step: sliderRow.step
-        value: sliderRow.value
-        onReleased: function(v) { sliderRow.value = v; sliderRow.committed(v) }
+        value: sliderRow.local
+        onReleased: function(v) { sliderRow.local = v; sliderRow.committed(v) }
       }
     }
   }
@@ -841,6 +861,9 @@ Item {
     property string unit: ""
     property string hint: ""
     signal committed(real value)
+    // See SliderRow: edits go to `local`, `value` keeps its binding.
+    property real local: value
+    onValueChanged: if (!stepTimer.running) local = value
 
     width: parent ? parent.width : 0
     foreground: panel.foreground
@@ -849,10 +872,10 @@ Item {
     Component.onCompleted: detail.registerRow(rowId, stepperRow)
 
     function adjust(dx) {
-      var next = Model.clamp(Math.round((value + dx * step) / step) * step, minimum, maximum)
+      var next = Model.clamp(Math.round((local + dx * step) / step) * step, minimum, maximum)
       next = Math.round(next * 100) / 100
-      if (next === value) return
-      value = next
+      if (next === local) return
+      local = next
       stepTimer.restart()
     }
     function activate() {}
@@ -860,7 +883,7 @@ Item {
     Timer {
       id: stepTimer
       interval: 400
-      onTriggered: stepperRow.committed(stepperRow.value)
+      onTriggered: stepperRow.committed(stepperRow.local)
     }
 
     MouseArea {
@@ -905,7 +928,7 @@ Item {
       }
       Text {
         textFormat: Text.PlainText
-        text: Model.withUnit(Model.formatNumber(stepperRow.value, 1), stepperRow.unit)
+        text: Model.withUnit(Model.formatNumber(stepperRow.local, 1), stepperRow.unit)
         color: panel.foreground
         font.family: panel.fontFamily
         font.pixelSize: Style.font.heading
@@ -1015,7 +1038,6 @@ Item {
     implicitHeight: hueLayout.implicitHeight + Style.space(12)
     Component.onCompleted: detail.registerRow(rowId, hueRow)
 
-    onHueChanged: if (!scrubbing) {}
     Connections {
       target: detail
       function onCurrentHueChanged() { if (!hueRow.scrubbing) hueRow.hue = detail.currentHue }

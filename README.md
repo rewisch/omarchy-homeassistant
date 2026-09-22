@@ -69,8 +69,11 @@ omarchy plugin add https://github.com/rewisch/omarchy-homeassistant.git --enable
 
 Then click the house icon in the bar. Enter the address of your instance
 and a long-lived access token (Home Assistant → your profile → Security →
-Long-lived access tokens) and press Connect. Press `a` to browse, type to
-search, `Enter` to star, `Esc` to return to the dashboard.
+Long-lived access tokens) and press Connect. An address without a scheme is
+tried over `https://` first and only falls back to `http://` when nothing
+answers there; the result tells you when the connection is unencrypted.
+Press `a` to browse, type to search, `Enter` to star, `Esc` to return to the
+dashboard.
 
 Live updates work out of the box: the WebSocket connection runs through a
 small bridge script (`ha-ws-bridge.py`, Python standard library only, and
@@ -88,12 +91,20 @@ Python ships with Omarchy). Nothing needs to be installed.
 The plugin talks only to the Home Assistant address you enter, with the
 token you paste, and treats that server as untrusted input:
 
+- **Entity ids** from the server, from `dashboard.json`, and from the
+  command line are accepted only when they match Home Assistant's own
+  alphabet (`domain.object_id`, lower-case letters, digits and underscores).
+  Anything else is dropped before it is stored, looked up, or written into
+  the Omarchy menu, where ids are single-quoted as well, because the menu
+  runs `action` and `checked` through a shell.
 - **WebSocket**: `ha-ws-bridge.py` owns the socket and checks every frame's
   announced length before reading its payload. Limits per connection:
-  32 MiB per frame, 64 MiB per message, 500 messages per second, 2 GiB and
-  2 million messages per session. Exceeding any of them closes the
-  connection, the shell shows the reason, and the plugin reconnects with
-  backoff. The shell only ever receives one bounded JSON line per message.
+  32 MiB per frame, 64 MiB per message, 500 messages per second sustained
+  with a burst allowance of 5,000 (a restarting instance emits one event per
+  entity while its integrations load), 2 GiB and 2 million messages per
+  session. Exceeding any of them closes the connection, the shell shows the
+  reason, and the plugin reconnects with backoff. The shell only ever
+  receives one bounded JSON line per message.
 - **REST**: every `curl` call carries `--max-filesize` and is piped through
   `head -c` at the same limit (1 MiB for config and service calls, 16 MiB
   for history, 64 MiB for the full state list), so an oversized or endless
@@ -104,6 +115,11 @@ token you paste, and treats that server as untrusted input:
 
 The token is sent only in the WebSocket auth message and the REST
 `Authorization` header, never on a command line.
+
+The shell IPC (`omarchy-shell rewisch.homeassistant …`) is available to
+every process running as your user, the same processes that could read
+`connection.json`. Treat it like the token: anything that can run commands
+as you can also call your Home Assistant services through it.
 
 ## Removal
 
@@ -116,7 +132,8 @@ If you enabled the Home submenu, turn it off in the panel's settings before
 removing the plugin, or delete the block between the
 `// >>> rewisch.homeassistant` and `// <<< rewisch.homeassistant` markers in
 `~/.config/omarchy/extensions/omarchy-menu.jsonc`. The plugin never touches
-anything else.
+anything else in that file beyond adding the comma the preceding entry needs,
+and it keeps the file's permissions as they were.
 
 Your connection is saved to `~/.config/omarchy/homeassistant/connection.json`
 with owner-only permissions. The dashboard, pins, alerts and preferences live
@@ -227,19 +244,31 @@ SettingsView.qml   notifications, menu, automations
 SetupView.qml      connection editor
 EntityRow.qml      shared list row
 HintBar.qml        keyboard hint footer
-test/              mock Home Assistant servers for development
+test/              Model.js unit tests and mock Home Assistant servers
 ```
 
 ## Development
 
-Clone into `~/src`, symlink it into the plugins directory, and restart the
-shell after editing (hot reload keeps the cached QML):
+The installed plugin is a git clone, so hack on it in place and pull
+updates with the plugin command:
 
 ```bash
-git clone https://github.com/rewisch/omarchy-homeassistant.git ~/src/omarchy-homeassistant
-ln -s ~/src/omarchy-homeassistant ~/.config/omarchy/plugins/rewisch.homeassistant
-omarchy plugin enable rewisch.homeassistant
+cd ~/.config/omarchy/plugins/rewisch.homeassistant
+omarchy plugin update rewisch.homeassistant
+```
+
+After editing QML, restart the shell (hot reload keeps the cached
+components):
+
+```bash
 omarchy restart shell
+```
+
+Unit tests for the pure helpers in `Model.js` (search, grouping, history
+parsing, menu splicing, id validation) run with Node:
+
+```bash
+node --test test/test_model.js
 ```
 
 See `test/README.md` for the mock servers.

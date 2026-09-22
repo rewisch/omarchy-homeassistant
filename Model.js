@@ -15,6 +15,26 @@ function objectIdOf(entityId) {
   return dot === -1 ? id : id.slice(dot + 1)
 }
 
+// Home Assistant entity ids are `domain.object_id`, both lower-case
+// alphanumerics and underscores. Everything the plugin stores, hands to a
+// shell, or writes into the Omarchy menu is filtered through this, so an id
+// from a hostile server or a hand-edited file can never carry anything else.
+var ENTITY_ID_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/
+
+function isValidEntityId(entityId) {
+  return typeof entityId === "string" && entityId.length <= 255 && ENTITY_ID_RE.test(entityId)
+}
+
+// `domain.service` uses the same alphabet.
+function isValidService(service) {
+  return isValidEntityId(service)
+}
+
+// POSIX single-quoting for the rare place a value has to go into shell text.
+function shellQuote(text) {
+  return "'" + String(text === undefined || text === null ? "" : text).replace(/'/g, "'\\''") + "'"
+}
+
 function friendlyName(entity) {
   if (!entity) return ""
   var attrs = entity.attributes || {}
@@ -33,7 +53,6 @@ function titleCase(text) {
 
 var GLYPH = {
   home: "󰟐",           // home-assistant
-  homePlain: "󰋜",
   search: "󰍉",
   cog: "󰒓",
   refresh: "󰑐",
@@ -47,33 +66,24 @@ var GLYPH = {
   close: "󰅖",
   chevronLeft: "󰅁",
   chevronRight: "󰅂",
-  chevronUp: "󰅃",
-  chevronDown: "󰅀",
   play: "󰐊",
   pause: "󰏤",
   next: "󰒭",
   prev: "󰒮",
   volume: "󰕾",
-  volumeOff: "󰖁",
   power: "󰐥",
-  flash: "󰉁",
   eye: "󰈈",
   eyeOff: "󰈉",
-  linkOn: "󰌘",
-  linkOff: "󰌙",
   arrowUp: "󰁝",
   arrowDown: "󰁅",
   stop: "󰓛",
-  tune: "󰘮",
-  bolt: "󱐋",
   alert: "󰀦",
   spinner: "󰦖",
   bell: "󰂚",
   bellOff: "󰂛",
   copy: "󰆏",
   drag: "󰇙",
-  camera: "󰄀",
-  chart: "󰧌"
+  camera: "󰄀"
 }
 
 var DOMAINS = {
@@ -314,12 +324,6 @@ function controlKind(entity) {
   return "none"
 }
 
-function hasDetail(entity) {
-  if (!entity) return false
-  var domain = domainOf(entity.entity_id)
-  return domain === "light" || domain === "climate" || domain === "media_player" || domain === "cover" || domain === "fan" || true
-}
-
 // The service call fired by Enter / click on the row body.
 function primaryAction(entity) {
   if (!entity) return null
@@ -413,14 +417,10 @@ function lightSupportsColorTemp(entity) {
   return false
 }
 
-// Cover supported_features bits (homeassistant.components.cover)
-var COVER_OPEN = 1, COVER_CLOSE = 2, COVER_SET_POSITION = 4, COVER_STOP = 8
-// Climate supported_features bits
-var CLIMATE_TARGET_TEMP = 1, CLIMATE_TARGET_TEMP_RANGE = 2, CLIMATE_FAN_MODE = 8, CLIMATE_PRESET = 16
-// Media player supported_features bits
-var MEDIA_PAUSE = 1, MEDIA_SEEK = 2, MEDIA_VOLUME_SET = 4, MEDIA_VOLUME_MUTE = 8, MEDIA_PREV = 16, MEDIA_NEXT = 32, MEDIA_TURN_ON = 128, MEDIA_TURN_OFF = 256, MEDIA_PLAY = 16384, MEDIA_SELECT_SOURCE = 2048
-// Fan
-var FAN_SET_SPEED = 1
+// supported_features bits the detail view reads (homeassistant.components.*)
+var COVER_SET_POSITION = 4
+var CLIMATE_TARGET_TEMP = 1
+var MEDIA_VOLUME_SET = 4, MEDIA_TURN_ON = 128, MEDIA_TURN_OFF = 256
 
 // ---- History ----------------------------------------------------------------
 
@@ -609,17 +609,16 @@ function searchEntities(list, query, group, areaNameFor, limit) {
 
 // ---- Config / persistence -------------------------------------------------
 
-function normalizeUrl(raw) {
-  var url = String(raw || "").trim()
-  if (url === "") return ""
-  if (!/^https?:\/\//i.test(url)) url = "http://" + url
-  return url.replace(/\/+$/, "")
+function hasScheme(raw) {
+  return /^https?:\/\//i.test(String(raw || "").trim())
 }
 
-function websocketUrl(baseUrl) {
-  var url = normalizeUrl(baseUrl)
+// `scheme` is used when the input has none; the stored form always has one.
+function normalizeUrl(raw, scheme) {
+  var url = String(raw || "").trim()
   if (url === "") return ""
-  return url.replace(/^http/i, "ws") + "/api/websocket"
+  if (!hasScheme(url)) url = (scheme || "http") + "://" + url
+  return url.replace(/\/+$/, "")
 }
 
 function parseJson(text, fallback) {
@@ -644,23 +643,23 @@ function parseDashboardFile(text) {
   var ids = []
   if (data.entities && typeof data.entities.length === "number") {
     for (var i = 0; i < data.entities.length; i++) {
-      var id = String(data.entities[i] || "")
-      if (id !== "" && ids.indexOf(id) === -1) ids.push(id)
+      var id = data.entities[i]
+      if (isValidEntityId(id) && ids.indexOf(id) === -1) ids.push(id)
     }
   }
   var bar = []
-  if (typeof data.bar === "string") { if (data.bar !== "") bar.push(data.bar) }
+  if (typeof data.bar === "string") { if (isValidEntityId(data.bar)) bar.push(data.bar) }
   else if (data.bar && typeof data.bar.length === "number") {
     for (var b = 0; b < data.bar.length; b++) {
-      var bid = String(data.bar[b] || "")
-      if (bid !== "" && bar.indexOf(bid) === -1) bar.push(bid)
+      var bid = data.bar[b]
+      if (isValidEntityId(bid) && bar.indexOf(bid) === -1) bar.push(bid)
     }
   }
   var alerts = []
   if (data.alerts && typeof data.alerts.length === "number") {
     for (var a = 0; a < data.alerts.length; a++) {
-      var aid = String(data.alerts[a] || "")
-      if (aid !== "" && alerts.indexOf(aid) === -1) alerts.push(aid)
+      var aid = data.alerts[a]
+      if (isValidEntityId(aid) && alerts.indexOf(aid) === -1) alerts.push(aid)
     }
   }
   return {
@@ -677,6 +676,47 @@ function serializeDashboard(entities, bar, alerts, prefs) {
 
 function slug(text) {
   return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+}
+
+// ---- Omarchy menu block -----------------------------------------------------
+
+// Replaces or inserts the generated block between the two marker lines and
+// leaves everything else byte for byte. `block` empty removes it. When the
+// block is appended before the closing brace, the preceding entry gets the
+// comma JSON needs; the shell's JSONC reader strips trailing commas but does
+// not add missing ones, so without this a user file whose last entry had no
+// trailing comma would stop parsing altogether.
+function spliceMenuBlock(text, block, markerStart, markerEnd) {
+  var src = String(text || "")
+  var start = src.indexOf(markerStart)
+  var end = src.indexOf(markerEnd)
+  if (start !== -1 && end !== -1 && end > start) {
+    var after = end + markerEnd.length
+    if (src.charAt(after) === "\n") after++
+    // Files written by an earlier version may lack the comma before the block.
+    var before = block ? ensureTrailingComma(src.slice(0, start)) : src.slice(0, start)
+    return before + (block ? block + "\n" : "") + src.slice(after)
+  }
+  if (!block) return src
+  var close = src.lastIndexOf("}")
+  if (close === -1) return "{\n" + block + "\n}\n"
+  var head = ensureTrailingComma(src.slice(0, close))
+  if (head.length > 0 && head.charAt(head.length - 1) !== "\n") head += "\n"
+  return head + block + "\n" + src.slice(close)
+}
+
+// Appends a comma to the last content line of an object body unless it is
+// already terminated (`,`) or is the opening brace itself.
+function ensureTrailingComma(head) {
+  var lines = head.split("\n")
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var t = lines[i].trim()
+    if (t === "" || t.indexOf("//") === 0) continue
+    var last = t.charAt(t.length - 1)
+    if (last !== "," && last !== "{" && last !== "[") lines[i] = lines[i].replace(/\s*$/, ",")
+    break
+  }
+  return lines.join("\n")
 }
 
 // Text for a desktop notification about a state change.

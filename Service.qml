@@ -48,7 +48,6 @@ Item {
   // The live transport runs through ha-ws-bridge.py (python3 ships with
   // Omarchy). If the bridge cannot start at all, polling takes over.
   readonly property bool wsAvailable: !ws.unavailable
-  readonly property bool wsMissing: false
   readonly property bool useWs: wsAvailable && transportSetting !== "Polling"
   readonly property bool useRest: !useWs && transportSetting !== "WebSocket"
   readonly property var activeTransport: useWs ? ws : (useRest ? rest : null)
@@ -157,18 +156,36 @@ Item {
     entityList = list
   }
 
+  // Same ids, names and visibility as before: swap the objects in place so
+  // rows read fresh state without `entityList` (and the browser's search
+  // results bound to it) being rebuilt on every poll.
+  function refreshList() {
+    var list = entityList
+    for (var i = 0; i < list.length; i++) {
+      var e = entities[list[i].entity_id]
+      if (e) list[i] = e
+    }
+  }
+
   function applyStates(states) {
     var started = Date.now()
     var map = {}
     var changed = []
+    var structural = false
+    var count = 0
     for (var i = 0; i < states.length; i++) {
       var s = states[i]
-      if (s && typeof s.entity_id === "string") {
-        map[s.entity_id] = decorate(s)
-        var prev = entities[s.entity_id]
-        if (prev && prev.state !== s.state) changed.push([s, prev])
+      if (!s || !Model.isValidEntityId(s.entity_id)) continue
+      var prev = entities[s.entity_id]
+      map[s.entity_id] = decorate(s)
+      count++
+      if (!prev) structural = true
+      else {
+        if (prev.state !== s.state) changed.push([s, prev])
+        if (prev.__sortName !== s.__sortName || prev.__hidden !== s.__hidden) structural = true
       }
     }
+    if (!structural && count !== Object.keys(entities).length) structural = true
     entities = map
     for (var c = 0; c < changed.length; c++) maybeAlert(changed[c][0], changed[c][1])
     for (var id in pending) {
@@ -176,7 +193,8 @@ Item {
       var e = map[id]
       if (e && (e.state === p.state || p.expires <= Date.now())) delete pending[id]
     }
-    rebuildList()
+    if (structural) rebuildList()
+    else refreshList()
     revision++
     _initialStatesLoaded = true
     lastSyncMs = Date.now() - started
@@ -207,7 +225,7 @@ Item {
   }
 
   function applyStateChange(state) {
-    if (!state || typeof state.entity_id !== "string") return
+    if (!state || !Model.isValidEntityId(state.entity_id)) return
     eventsTotal++
     _eventsWindow++
     var previous = entities[state.entity_id]
@@ -257,7 +275,10 @@ Item {
     Quickshell.execDetached(cmd)
   }
 
+  property var _entityRows: []
+
   function applyRegistry(kind, rows) {
+    if (!rows || typeof rows.length !== "number") return
     var i
     if (kind === "area") {
       var a = {}
@@ -268,30 +289,35 @@ Item {
       for (i = 0; i < rows.length; i++) if (rows[i] && rows[i].id) d[rows[i].id] = rows[i].area_id || ""
       devices = d
     } else if (kind === "entity") {
-      var ea = {}
+      _entityRows = rows
       var em = {}
       for (i = 0; i < rows.length; i++) {
         var r = rows[i]
         if (!r || !r.entity_id) continue
-        var areaId = r.area_id || (r.device_id ? devices[r.device_id] : "") || ""
-        if (areaId) ea[r.entity_id] = areaId
         em[r.entity_id] = {
           diagnostic: r.entity_category === "diagnostic" || r.entity_category === "config",
           hidden: !!r.hidden_by || !!r.disabled_by
         }
       }
-      entityArea = ea
       entityMeta = em
       for (var id in entities) decorate(entities[id])
       rebuildList()
     }
-    // Device areas can arrive after the entity registry; re-resolve once all three are in.
-    if (kind === "device" && Object.keys(entityMeta).length > 0) {
-      var resolved = {}
-      for (var eid in entityArea) resolved[eid] = entityArea[eid]
-      entityArea = resolved
-    }
+    // An entity's area may come from its device, and the two registries can
+    // answer in either order, so areas are recomputed whenever either lands.
+    if (kind === "device" || kind === "entity") resolveAreas()
     revision++
+  }
+
+  function resolveAreas() {
+    var ea = {}
+    for (var i = 0; i < _entityRows.length; i++) {
+      var r = _entityRows[i]
+      if (!r || !r.entity_id) continue
+      var areaId = r.area_id || (r.device_id ? devices[r.device_id] : "") || ""
+      if (areaId) ea[r.entity_id] = areaId
+    }
+    entityArea = ea
   }
 
   function countOn() {
@@ -424,6 +450,7 @@ Item {
   // ---- History ----------------------------------------------------------------
   property var _historyCache: ({})
   signal historyReceived(string entityId, int hours, var points)
+  signal historyFailed(string entityId, int hours)
 
   function requestHistory(entityId, hours) {
     var key = entityId + ":" + hours
@@ -432,11 +459,11 @@ Item {
       historyReceived(entityId, hours, cached.points)
       return
     }
-    if (!activeTransport || !connected || typeof activeTransport.fetchHistory !== "function") return
+    if (!activeTransport || !connected || typeof activeTransport.fetchHistory !== "function") { historyFailed(entityId, hours); return }
     var end = new Date()
     var start = new Date(end.getTime() - hours * 3600 * 1000)
     activeTransport.fetchHistory(entityId, start.toISOString(), end.toISOString(), function(ok, raw) {
-      if (!ok) return
+      if (!ok) { historyFailed(entityId, hours); return }
       var points = Model.parseHistory(raw, entityId)
       var keys = Object.keys(_historyCache)
       if (keys.length >= 40) delete _historyCache[keys[0]]
@@ -590,7 +617,7 @@ Item {
 
   function automation(kind) {
     var v = automations ? automations[kind] : ""
-    return typeof v === "string" ? v : ""
+    return Model.isValidEntityId(v) ? v : ""
   }
 
   function setAutomation(kind, entityId) {
@@ -666,6 +693,7 @@ Item {
     var used = {}
     for (var i = 0; i < dashboardIds.length; i++) {
       var id = dashboardIds[i]
+      if (!Model.isValidEntityId(id)) continue
       var e = entityFor(id)
       var name = e ? Model.friendlyName(e) : id
       var key = Model.slug(name) || Model.slug(id)
@@ -674,12 +702,15 @@ Item {
       used[key] = true
       var glyph = Model.domainMeta(Model.domainOf(id)).icon
       var entry = { icon: glyph, label: name }
+      // Both fields are run by the menu through a shell (`checked` on every
+      // open, without a click), so the id is validated above and quoted here.
+      var qid = Model.shellQuote(id)
       if (e && Model.primaryAction(e)) {
-        entry.action = "omarchy-shell rewisch.homeassistant toggleEntity " + id
+        entry.action = "omarchy-shell rewisch.homeassistant toggleEntity " + qid
         if (Model.controlKind(e) === "switch")
-          entry.checked = "[[ \"$(omarchy-shell rewisch.homeassistant state " + id + ")\" == on ]]"
+          entry.checked = "[[ \"$(omarchy-shell rewisch.homeassistant state " + qid + ")\" == on ]]"
       } else {
-        entry.action = "omarchy-shell rewisch.homeassistant detail " + id
+        entry.action = "omarchy-shell rewisch.homeassistant detail " + qid
       }
       lines.push('  "home.' + key + '": ' + JSON.stringify(entry) + ",")
     }
@@ -688,22 +719,7 @@ Item {
   }
 
   function spliceMenu(text) {
-    var start = text.indexOf(menuMarkerStart)
-    var end = text.indexOf(menuMarkerEnd)
-    var block = menuSync ? menuBlock() : ""
-    if (start !== -1 && end !== -1 && end > start) {
-      var after = end + menuMarkerEnd.length
-      if (text.charAt(after) === "\n") after++
-      var before = text.slice(0, start)
-      if (!menuSync && before.length > 0 && before.charAt(before.length - 1) === "\n") {}
-      return before + (block ? block + "\n" : "") + text.slice(after)
-    }
-    if (!menuSync) return text
-    var close = text.lastIndexOf("}")
-    if (close === -1) return "{\n" + block + "\n}\n"
-    var head = text.slice(0, close)
-    if (head.length > 0 && head.charAt(head.length - 1) !== "\n") head += "\n"
-    return head + block + "\n" + text.slice(close)
+    return Model.spliceMenuBlock(text, menuSync ? menuBlock() : "", menuMarkerStart, menuMarkerEnd)
   }
 
   function syncMenu() {
@@ -752,13 +768,29 @@ Item {
 
   // One-off check with candidate credentials, independent of the live
   // transport, so the setup view can validate before anything is saved.
+  // An address without a scheme is tried over https first; plain http only
+  // when nothing answers there, so the token is not sent in the clear when
+  // the instance does offer TLS. `probedUrl` is the address that succeeded.
+  property string probedUrl: ""
+  property string _probeBase: ""
+  property string _probeFallback: ""
+  property string _probeToken: ""
+
   function probe(candidateUrl, candidateToken) {
-    var base = Model.normalizeUrl(candidateUrl)
+    var raw = String(candidateUrl || "").trim()
     var tok = String(candidateToken || "").trim()
-    if (base === "") { probeFinished(false, "Enter the URL of your Home Assistant instance."); return }
+    if (raw === "") { probeFinished(false, "Enter the URL of your Home Assistant instance."); return }
     if (tok === "") { probeFinished(false, "Paste a long-lived access token."); return }
     if (probeProc.running) return
-    probeProc.environment = ({ HA_TOKEN: tok })
+    probedUrl = ""
+    _probeToken = tok
+    _probeFallback = Model.hasScheme(raw) ? "" : Model.normalizeUrl(raw, "http")
+    runProbe(Model.hasScheme(raw) ? Model.normalizeUrl(raw) : Model.normalizeUrl(raw, "https"))
+  }
+
+  function runProbe(base) {
+    _probeBase = base
+    probeProc.environment = ({ HA_TOKEN: _probeToken })
     probeProc.command = ["sh", "-c", "curl -sS -m 10 --max-filesize 1048576 -H \"Authorization: Bearer $HA_TOKEN\" -w '\\n%{http_code}' \"$1\" | head -c 1048576", "curl", base + "/api/config"]
     probeProc.running = true
   }
@@ -797,7 +829,10 @@ Item {
     if (writer.running || _writeQueue.length === 0) return
     var job = _writeQueue.shift()
     writer.environment = ({ HA_CONTENT: job.content })
-    writer.command = ["sh", "-c", "umask 077; mkdir -p \"$(dirname \"$1\")\" && printf '%s' \"$HA_CONTENT\" > \"$1.tmp\" && mv -f \"$1.tmp\" \"$1\"", "write", job.path]
+    // New files (the plugin's own) are created owner-only through the umask;
+    // an existing file keeps its mode, so the user's menu extension is not
+    // silently tightened to 600 when the block is written into it.
+    writer.command = ["sh", "-c", "umask 077; mkdir -p \"$(dirname \"$1\")\" && printf '%s' \"$HA_CONTENT\" > \"$1.tmp\" && { [ ! -e \"$1\" ] || chmod --reference=\"$1\" \"$1.tmp\"; } && mv -f \"$1.tmp\" \"$1\"", "write", job.path]
     writer.running = true
   }
 
@@ -815,14 +850,27 @@ Item {
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(exitCode) {
       var text = String(probeProc.stdout.text || "")
-      if (text.length >= 1048576) { root.probeFinished(false, "The response was larger than expected for a Home Assistant instance."); return }
       var nl = text.lastIndexOf("\n")
       var code = nl === -1 ? 0 : parseInt(text.slice(nl + 1).trim(), 10)
+      if (code === 0 && root._probeFallback !== "") {
+        // Nothing answered over TLS (refused, reset, or not a TLS port); the
+        // fallback is only taken when the server was not reached at all.
+        var fallback = root._probeFallback
+        root._probeFallback = ""
+        root.runProbe(fallback)
+        return
+      }
+      root._probeFallback = ""
+      root._probeToken = ""
+      if (text.length >= 1048576) { root.probeFinished(false, "The response was larger than expected for a Home Assistant instance."); return }
       if (code === 200) {
         var cfg = null
         try { cfg = JSON.parse(text.slice(0, nl)) } catch (e) { cfg = null }
         if (cfg && cfg.location_name) root.haConfig = cfg
-        root.probeFinished(true, cfg && cfg.location_name ? "Connected to " + cfg.location_name : "Connected")
+        root.probedUrl = root._probeBase
+        var msg = cfg && cfg.location_name ? "Connected to " + cfg.location_name : "Connected"
+        if (root._probeBase.indexOf("http://") === 0) msg += " (unencrypted connection)"
+        root.probeFinished(true, msg)
       } else if (code === 401 || code === 403) {
         root.probeFinished(false, "Home Assistant rejected the token.")
       } else if (code === 404) {

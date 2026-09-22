@@ -39,10 +39,21 @@ Item {
     check()
   }
 
+  // Stops every process and timer and fails whatever was queued, so nothing
+  // runs later with credentials that may since have been cleared.
   function stop() {
     pollTimer.stop()
+    settleTimer.stop()
     statesProc.running = false
     checkProc.running = false
+    _activeCall = null
+    _callQueue = []
+    callProc.running = false
+    var jobs = _historyQueue
+    _historyQueue = []
+    _activeHistory = null
+    historyProc.running = false
+    for (var i = 0; i < jobs.length; i++) if (jobs[i].callback) jobs[i].callback(false, null)
     connected = false
     _checked = false
   }
@@ -66,7 +77,7 @@ Item {
   }
 
   function fetchStates() {
-    if (statesProc.running) return
+    if (!enabled || baseUrl === "" || token === "" || statesProc.running) return
     statesProc.command = curlCommand("GET", "/api/states", "", limitStates)
     statesProc.environment = env("")
     statesProc.running = true
@@ -223,6 +234,7 @@ Item {
       var res = root.splitResponse(callProc.stdout.text, root.limitSmall)
       var call = root._activeCall
       root._activeCall = null
+      if (!call) { root.pumpCalls(); return }  // stopped mid-flight
       if (res.code >= 200 && res.code < 300) {
         root.callFinished(call, true, "")
         // Services take a moment to settle; fetch fresh states shortly after.

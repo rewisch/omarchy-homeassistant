@@ -154,19 +154,34 @@ Panel {
         automations: root.ha.automations, automationsActive: root.ha.automationsActive, presence: [root.ha._lockedState, root.ha._screensaverState],
         eventsTotal: root.ha.eventsTotal, eventsPerSecond: root.ha.eventsPerSecond, revision: root.ha.revision, lastSyncMs: root.ha.lastSyncMs })
     }
-    function toggleEntity(entityId: string): string { return ha.runPrimary(entityId) ? "ok" : "unknown" }
-    function turnOn(entityId: string): string { return ha.turnOn(entityId) ? "ok" : "error" }
-    function turnOff(entityId: string): string { return ha.turnOff(entityId) ? "ok" : "error" }
+    // Ids and service names from the command line are checked against the
+    // Home Assistant alphabet before anything is sent or looked up.
+    function toggleEntity(entityId: string): string {
+      if (!Model.isValidEntityId(entityId)) return "invalid entity id"
+      return ha.runPrimary(entityId) ? "ok" : "unknown"
+    }
+    function turnOn(entityId: string): string {
+      if (!Model.isValidEntityId(entityId)) return "invalid entity id"
+      return ha.turnOn(entityId) ? "ok" : "error"
+    }
+    function turnOff(entityId: string): string {
+      if (!Model.isValidEntityId(entityId)) return "invalid entity id"
+      return ha.turnOff(entityId) ? "ok" : "error"
+    }
     function state(entityId: string): string {
-      var e = ha.entityFor(entityId)
+      var e = Model.isValidEntityId(entityId) ? ha.entityFor(entityId) : null
       return e ? String(e.state) : ""
     }
     function call(service: string, entityId: string): string {
-      var parts = String(service || "").split(".")
-      if (parts.length !== 2) return "usage: call <domain.service> <entity_id>"
+      if (!Model.isValidService(service)) return "usage: call <domain.service> <entity_id>"
+      if (entityId && !Model.isValidEntityId(entityId)) return "invalid entity id"
+      var parts = String(service).split(".")
       return ha.call(parts[0], parts[1], entityId ? { entity_id: entityId } : {}) ? "ok" : "error"
     }
-    function detail(entityId: string): void { root.open(); root.openDetail(entityId, "home") }
+    function detail(entityId: string): void {
+      if (!Model.isValidEntityId(entityId)) return
+      root.open(); root.openDetail(entityId, "home")
+    }
   }
 
   WidgetButton {

@@ -55,7 +55,10 @@ Item {
       setup.message = text
       setup.messageIsError = !ok
       if (ok) {
-        ha.saveConnection(urlField.text, tokenField.text)
+        // The probe may have settled on https for a bare host; keep that.
+        var url = ha.probedUrl !== "" ? ha.probedUrl : urlField.text
+        urlField.text = url
+        ha.saveConnection(url, tokenField.text)
         saveTimer.restart()
       }
     }
